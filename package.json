@@ -14,7 +14,7 @@
   },
   "keywords": ["discord", "bot", "voice", "temporary-channels", "typescript"],
   "author": "PineFruitDev <contact@pinefruit.dev>",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "dependencies": {
     "discord.js": "^14.22.1",
     "dotenv": "^16.6.1"

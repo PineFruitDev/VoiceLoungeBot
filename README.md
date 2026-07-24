@@ -192,7 +192,13 @@ Yes. Owners get Manage Channel on their own room, so the usual channel edit opti
 
 ## License
 
-MIT License. See the [LICENSE](LICENSE) file.
+This project is licensed under **[Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) + the [Commons Clause](https://commonsclause.com/)**. In plain terms:
+
+- ✅ **Free to use and self-host.** Run the bot in as many servers as you like, for a community or a company, at no cost.
+- ✅ **Forking and contributing is welcome.** Fork the repo, modify the code, and open a PR. Community contributions are encouraged.
+- ❌ **You cannot sell the bot itself.** The Commons Clause means you may not sell a product or service whose value derives *primarily* from this bot (for example, offering it as a paid hosted bot, or charging for paid support of it).
+
+In short: run it wherever you want and build on it freely, just don't sell *the bot itself*. See [LICENSE](LICENSE) for the full terms.
 
 ## Contributing
 
