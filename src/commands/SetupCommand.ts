@@ -60,6 +60,23 @@ export class SetupCommand extends Command {
     const newPublic = await this.ensureVoiceChannel(guild, existing?.newPublicId, NEW_PUBLIC_NAME, category.id);
     const newPrivate = await this.ensureVoiceChannel(guild, existing?.newPrivateId, NEW_PRIVATE_NAME, category.id);
 
+    // Grant @everyone Move Members on the waiting room. Discord requires Move
+    // Members in both the source and destination channels to drag a member.
+    // Channel owners already hold it on their own temp channel (the destination);
+    // this covers the waiting room (the source) so an owner can drag someone into
+    // their channel. The grant is naturally scoped: a member can only deposit a
+    // waiting-room occupant into a channel where they also hold Move Members, which
+    // is only their own temp channel. Applied every run so it self-repairs.
+    try {
+      await waitingRoom.permissionOverwrites.edit(guild.roles.everyone, {
+        ViewChannel: true,
+        Connect: true,
+        MoveMembers: true
+      });
+    } catch (error) {
+      this.logger.warn('execute - Failed to set waiting room permissions:', error);
+    }
+
     await store.setLounge(guild.id, {
       categoryId: category.id,
       waitingRoomId: waitingRoom.id,

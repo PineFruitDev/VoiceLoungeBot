@@ -3,7 +3,6 @@ import {
   Events,
   VoiceState,
   Guild,
-  GuildMember,
   ChannelType,
   PermissionFlagsBits,
   OverwriteType,
@@ -41,24 +40,17 @@ const CONTROL_FLAGS = {
  * and tears the channel down once it empties.
  */
 export class VoiceLoungeService {
-  private static instance: VoiceLoungeService | null = null;
-
   private logger = new Logger({ context: 'VoiceLoungeService' });
 
   constructor(
     private client: Client,
     private store: GuildConfigStore
   ) {
-    VoiceLoungeService.instance = this;
     this.client.on(Events.VoiceStateUpdate, (oldState, newState) => {
       this.handleVoiceStateUpdate(oldState, newState).catch(error => {
         this.logger.error('handleVoiceStateUpdate - Unhandled error:', error);
       });
     });
-  }
-
-  public static getInstance(): VoiceLoungeService | null {
-    return VoiceLoungeService.instance;
   }
 
   /**
@@ -246,37 +238,6 @@ export class VoiceLoungeService {
       this.logger.warn(`deleteChannel - Failed to delete channel ${channelId}:`, error);
     } finally {
       await this.store.removeTempChannel(guild.id, channelId);
-    }
-  }
-
-  /**
-   * Move a target member into the caller's owned temp channel.
-   * Used by /pull as a reliable path for the drag-to-private flow.
-   */
-  public async pullMember(caller: GuildMember, target: GuildMember): Promise<{ ok: boolean; reason?: string; channelName?: string }> {
-    const guildId = caller.guild.id;
-    const config = this.store.getGuild(guildId);
-    if (!config) return { ok: false, reason: 'The lounge is not set up in this server yet.' };
-
-    const owned = Object.entries(config.tempChannels).find(([, record]) => record.ownerId === caller.id);
-    if (!owned) return { ok: false, reason: 'You do not own a temporary voice channel right now.' };
-
-    const [channelId] = owned;
-    const channel = caller.guild.channels.cache.get(channelId);
-    if (!channel || channel.type !== ChannelType.GuildVoice) {
-      return { ok: false, reason: 'Your temporary channel could not be found.' };
-    }
-
-    if (!target.voice.channelId) {
-      return { ok: false, reason: `${target.displayName} is not connected to voice.` };
-    }
-
-    try {
-      await target.voice.setChannel(channel);
-      return { ok: true, channelName: channel.name };
-    } catch (error) {
-      this.logger.warn(`pullMember - Failed to move ${target.user.tag}:`, error);
-      return { ok: false, reason: 'I could not move that member. Check my Move Members permission.' };
     }
   }
 

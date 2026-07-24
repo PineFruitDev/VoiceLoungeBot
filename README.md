@@ -8,7 +8,7 @@ Built on the [TSTemplateBot](https://github.com/PineFruitDev/TSTemplateBot) arch
 
 Running `/setup` creates a **VOICE HUB** category with three channels that everyone can see and join:
 
-- **Drag Me to Private** is a waiting room. People sit here until a channel owner pulls them into a private room.
+- **Drag Me to Private** is a waiting room. People sit here until a channel owner drags them into a private room from the Discord client.
 - **➕ New Public** spawns a public temporary channel when someone joins it. Anyone can see and join the new channel.
 - **➕ New Private** spawns a private temporary channel. Everyone can see it exists, but only the owner and the people they pull in can connect.
 
@@ -20,7 +20,6 @@ When a member spawns a channel they become its owner: they get Manage Channel on
 |---------|----------------|--------------|
 | `/setup` | Manage Server | Create or repair the voice lounge in this server |
 | `/set-mod-role role:@Role` | Manage Server | Give a role full control over every temporary channel, including private ones |
-| `/pull member:@User` | anyone with a channel | Pull a member into the temporary channel you own |
 | `/ping` | anyone | Latency check |
 | `/help` | anyone | List the commands |
 
@@ -36,9 +35,20 @@ The bot listens to the `VoiceStateUpdate` gateway event. When a member joins one
 
 Per-guild configuration (the lounge channel IDs, the moderator role, and the list of live temporary channels) is stored in `data/guilds.json`. This lets the bot recover after a restart: on startup it sweeps every configured lounge, deletes temporary channels that are now empty, and re-adopts any that are still in use so they get cleaned up later.
 
-### A note on drag-to-private
+### Dragging people in from the waiting room
 
-Channel owners get the Move Members permission on their own channel, which is what lets them drag people out of the waiting room in the Discord client. Move Members behavior with channel-scoped overwrites has not been verified against a live server yet. If manual dragging does not work in practice, `/pull` is the reliable fallback: it uses the bot's guild-level Move Members permission to move a member into the channel you own.
+Pulling someone out of the waiting room is a manual action the channel owner does in the Discord client (right click the person, Move To, pick your channel; or drag them). The bot does not move people around, it just sets up the permissions that let owners do it.
+
+Discord's rule for moving a member between two voice channels is that the person doing the move needs the **Move Members** permission in **both** the source channel and the destination channel. The member being moved does **not** need Connect on the destination: Move Members overrides that, which is exactly what makes dragging someone into a private room work without granting them anything first.
+
+The setup grants cover both sides:
+
+- **Destination (the owner's temp channel):** the owner's permission overwrite grants Move Members (and Connect), applied when the channel is created.
+- **Source (the waiting room):** `/setup` grants Move Members to `@everyone` on the waiting room, so any member can move a waiting-room occupant.
+
+That `@everyone` grant is naturally scoped by the destination rule: a member can only *deposit* a waiting-room occupant into a channel where they also hold Move Members, which is only their own temp channel. They cannot pull waiting-room people into arbitrary channels. The one side effect worth knowing is that Move Members on the waiting room also lets any member *disconnect* someone who is sitting in the waiting room, since disconnecting only checks the source channel. For a channel whose entire purpose is "sit here to get pulled," that is low stakes, but if you would rather lock it down, remove the `@everyone` Move Members overwrite on the waiting room and give it to a specific role instead (members without it will not be able to drag from the waiting room).
+
+This was reasoned from Discord's documented Move Members behavior rather than verified against a live server, since that needs a bot token. If dragging does not behave as described, the waiting-room overwrite is the first thing to check.
 
 ## Setup
 
@@ -58,7 +68,7 @@ Invite the bot with the `bot` and `applications.commands` scopes and this permis
 288359440
 ```
 
-That covers View Channels, Manage Channels, Manage Roles, Move Members, Connect, and Speak. Manage Roles and Manage Channels are needed to create channels and write their permission overwrites; Move Members is needed to move people into the channels they own.
+That covers View Channels, Manage Channels, Manage Roles, Move Members, Connect, and Speak. Manage Roles and Manage Channels are needed to create channels and write their permission overwrites; Move Members lets the bot move a member into the temporary channel it just created for them.
 
 Invite URL template (replace `YOUR_CLIENT_ID`):
 
@@ -139,7 +149,6 @@ src/
 │   ├── index.ts                # Command registry (single source of truth)
 │   ├── SetupCommand.ts         # /setup
 │   ├── SetModRoleCommand.ts    # /set-mod-role
-│   ├── PullCommand.ts          # /pull
 │   ├── PingCommand.ts          # /ping
 │   └── HelpCommand.ts          # /help
 ├── services/
