@@ -1,0 +1,27 @@
+{
+  "name": "voice-lounge-bot",
+  "version": "1.0.0",
+  "description": "Discord bot that spins up on-demand public and private voice channels from a lounge hub",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "npm run build && node dist/index.js",
+    "start": "node dist/index.js",
+    "register": "npm run build && node dist/register.js",
+    "deploy": "npm-run-all build register start"
+  },
+  "keywords": ["discord", "bot", "voice", "temporary-channels", "typescript"],
+  "author": "PineFruitDev <contact@pinefruit.dev>",
+  "license": "MIT",
+  "dependencies": {
+    "discord.js": "^14.22.1",
+    "dotenv": "^16.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.9.2"
+  }
+}
