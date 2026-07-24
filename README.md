@@ -1,84 +1,77 @@
 # VoiceLoungeBot
 
-A focused Discord bot that runs a self-serve voice lounge. Members join a trigger channel and the bot spins up a personal voice channel for them, hands them control of it, and deletes it the moment it empties. One command sets the whole thing up.
+Give your community self-serve voice channels. Members join a hub channel and the bot spins up a personal room for them, hands them the controls, and cleans it up the moment it empties. No staff babysitting, no leftover empty channels.
 
-Built on the [TSTemplateBot](https://github.com/PineFruitDev/TSTemplateBot) architecture: command class pattern, a single command registry, full TypeScript.
+Built on the [TSTemplateBot](https://github.com/PineFruitDev/TSTemplateBot) architecture: command class pattern, single source of truth, full TypeScript.
 
-## What it does
+## Features
 
-Running `/setup` creates a **VOICE HUB** category with three channels that everyone can see and join:
+- **Join to Create**: Join **New Public** or **New Private** and the bot builds a fresh voice channel and drops you into it
+- **Public and Private Rooms**: Public rooms anyone can join; private rooms everyone can see but only the owner and the people they pull in can enter
+- **Drag Me to Private Waiting Room**: A lobby where people wait to be dragged into a private room, set up with the permissions that let owners do the dragging
+- **Owner Controls**: Whoever creates a room gets Manage Channel on it, so they can rename it, set a user limit, and drag people in from the waiting room
+- **Ownership Handoff**: If the owner leaves while others are still talking, control passes to whoever has been in the room longest
+- **Automatic Cleanup**: When the last person leaves a room, the bot deletes it. Empty rooms left behind by a restart are swept on the next boot
+- **Moderator Role**: Point `/set-mod-role` at a role to give it full control over every temporary room, private ones included
+- **Multi-Server**: Fully per-guild. One instance serves any number of servers, each with its own lounge and its own moderator role
+- **No Privileged Intents**: Runs on the Guilds and Voice States intents, so there is nothing to toggle in the Developer Portal
+- **Production Ready**: Environment validation, contextual logging, and a restart-safe design
 
-- **Drag Me to Private** is a waiting room. People sit here until a channel owner drags them into a private room from the Discord client.
-- **➕ New Public** spawns a public temporary channel when someone joins it. Anyone can see and join the new channel.
-- **➕ New Private** spawns a private temporary channel. Everyone can see it exists, but only the owner and the people they pull in can connect.
+## How It Works
 
-When a member spawns a channel they become its owner: they get Manage Channel on it (rename, set a user limit, and so on) plus the ability to drag members in from the waiting room. If the owner leaves while other people are still in the channel, control passes to whoever has been in the channel longest so the room stays manageable. When the last person leaves a temporary channel, the bot deletes it.
+The bot watches the `VoiceStateUpdate` gateway event. When a member joins one of the two trigger channels, it creates a voice channel under the lounge category, writes permission overwrites that make the joining member the owner, and moves them in. Joining the waiting room does nothing on its own; it is a place to sit while an owner drags you across.
+
+Each temporary room tracks who is inside and when they joined, so if the owner leaves the bot can hand control to the next longest-present member. When a room empties, it is deleted. On startup the bot reconciles every server it is in: empty temporary rooms are removed and occupied ones are re-adopted so they still get cleaned up later.
+
+Everything the bot needs to remember (the lounge channel IDs, the moderator role, and the live rooms) is stored per server in a small JSON file, so it all survives a restart.
 
 ## Commands
 
 | Command | Who can run it | What it does |
 |---------|----------------|--------------|
 | `/setup` | Manage Server | Create or repair the voice lounge in this server |
-| `/set-mod-role role:@Role` | Manage Server | Give a role full control over every temporary channel, including private ones |
-| `/ping` | anyone | Latency check |
-| `/help` | anyone | List the commands |
+| `/set-mod-role role:@Role` | Manage Server | Give a role full control over every temporary room, private ones included |
+| `/ping` | Anyone | Latency check |
+| `/help` | Anyone | List the commands |
 
-`/setup` is safe to run more than once. If the lounge already exists it reuses the current channels instead of creating duplicates, so it also rebuilds the lounge if the channels were deleted.
+`/setup` is safe to run again. If the lounge already exists it reuses the current channels instead of duplicating them, so it also rebuilds the lounge if the channels were deleted.
 
-### Moderator role
-
-`/set-mod-role` designates a role as lounge moderator. Members with that role can see, join, and fully manage every temporary channel, private ones included, without owning them. The role is applied to channels that are already open and to every channel created afterward.
-
-## How it works
-
-The bot listens to the `VoiceStateUpdate` gateway event. When a member joins one of the two trigger channels, it creates a new voice channel under the lounge category, writes permission overwrites that make the joining member the owner, and moves them in. It tracks who is in each temporary channel and when they joined, so if the owner leaves it can hand control to the longest-present member. When a member leaves a temporary channel and it is empty, the channel is deleted.
-
-Per-guild configuration (the lounge channel IDs, the moderator role, and the list of live temporary channels) is stored in `data/guilds.json`. This lets the bot recover after a restart: on startup it sweeps every configured lounge, deletes temporary channels that are now empty, and re-adopts any that are still in use so they get cleaned up later.
-
-### Dragging people in from the waiting room
-
-Pulling someone out of the waiting room is a manual action the channel owner does in the Discord client (right click the person, Move To, pick your channel; or drag them). The bot does not move people around, it just sets up the permissions that let owners do it.
-
-Discord's rule for moving a member between two voice channels: the person doing the move needs **Move Members** in **both** the source and the destination channel, and must be able to **Connect** to the destination themselves. The member being moved does **not** need Connect on the destination, which is exactly what makes dragging someone into a private room work without granting them anything first.
-
-The setup grants cover both sides:
-
-- **Destination (the owner's temp channel):** the owner's permission overwrite grants Move Members and Connect, applied when the channel is created.
-- **Source (the waiting room):** `/setup` grants Move Members to `@everyone` on the waiting room, so any member can move someone who is waiting there. Joining "Drag Me to Private" is the opt-in: you sit there because you want to be pulled.
-
-**Private rooms stay safe.** On a private temp channel only the owner and the moderator role are granted Connect (everyone else is denied it). Since a dragger has to be able to Connect to the destination, nobody but the owner and mods can drop a waiting member into a given private room. There is no way to shove someone into a private room you do not control.
-
-**The one mild troll vector:** because everyone has Move Members on the waiting room, a member could, at worst, drag a waiting person into a public voice channel that member can already access. That is acceptable since waiting in "Drag Me to Private" is opt-in, and a public channel is one the person could have joined anyway. The same grant also lets a member disconnect someone sitting in the waiting room. Both are low stakes for a channel whose whole purpose is "sit here to get pulled." If you would rather lock it down, remove the `@everyone` Move Members overwrite on the waiting room and give it to a specific role instead; members without it will not be able to drag from the waiting room.
-
-This was reasoned from Discord's documented Move Members behavior rather than verified against a live server, since that needs a bot token. If dragging does not behave as described, the waiting-room overwrite is the first thing to check.
-
-## Setup
+## Quick Start
 
 ### 1. Create the application
 
-1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and create an application.
-2. Under **Bot**, create a bot and copy its token.
-3. Copy the **Application ID** from the General Information page. This is your client ID.
+1. Open the [Discord Developer Portal](https://discord.com/developers/applications) and create an application.
+2. Under **Bot**, add a bot and copy its token.
+3. Copy the **Application ID** from the General Information page. That is your client ID.
 
-No privileged intents are required. The bot uses the `Guilds` and `GuildVoiceStates` intents, neither of which needs a toggle in the portal.
+No privileged intents are required.
 
 ### 2. Invite the bot
 
-Invite the bot with the `bot` and `applications.commands` scopes and this permissions integer:
+Invite it with the `bot` and `applications.commands` scopes and this permissions integer:
 
 ```
 288359440
 ```
 
-That covers View Channels, Manage Channels, Manage Roles, Move Members, Connect, and Speak. Manage Roles and Manage Channels are needed to create channels and write their permission overwrites; Move Members lets the bot move a member into the temporary channel it just created for them.
-
-Invite URL template (replace `YOUR_CLIENT_ID`):
+Invite URL template (swap in your client ID):
 
 ```
 https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=288359440&scope=bot%20applications.commands
 ```
 
-Make sure the bot's role sits high enough in the server's role list to manage the lounge channels.
+That number is the sum of the permissions the bot actually uses:
+
+| Permission | Why it is needed |
+|------------|------------------|
+| View Channels | See the lounge and the rooms it manages |
+| Manage Channels | Create and delete temporary rooms |
+| Manage Roles | Write the permission overwrites on each room |
+| Move Members | Move a member into the room the bot just created for them |
+| Connect | Required alongside Move Members to move members into voice |
+| Speak | So the owner and mod overwrites it grants are valid |
+
+Place the bot's role high enough in **Server Settings > Roles** that it can manage the lounge channels.
 
 ### 3. Configure
 
@@ -103,41 +96,38 @@ npm run register   # register slash commands with Discord (run once, or after ch
 npm start          # start the bot
 ```
 
-Then run `/setup` in your server.
+Then run `/setup` in your server and the lounge appears.
 
-## Scripts
+## Dragging people in from the waiting room
 
-- `npm run build` compiles TypeScript to `dist/`
-- `npm run register` builds, then registers slash commands with Discord
-- `npm start` runs the compiled bot
-- `npm run dev` builds and runs in one step
-- `npm run deploy` builds, registers, then starts (handy for a fresh host)
+Pulling someone out of the waiting room is a manual action the room owner does in the Discord client (right click the person, Move To, pick your room; or drag them). The bot does not move people around, it just sets up the permissions that let owners do it.
 
-## Environment variables
+Discord's rule for moving a member between two voice channels: the person doing the move needs **Move Members** in **both** the source and the destination channel, and must be able to **Connect** to the destination themselves. The member being moved does **not** need Connect on the destination, which is exactly what makes dragging someone into a private room work without granting them anything first.
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `DISCORD_TOKEN` | yes | Bot token from the Developer Portal |
-| `DISCORD_CLIENT_ID` | yes | Application (client) ID |
-| `DEVELOPER_IDS` | no | Comma-separated user IDs for developer-only commands |
-| `NODE_ENV` | no | `development` enables debug logging (defaults to `production`) |
-| `DATA_DIR` | no | Directory for the persisted config file (defaults to `data`) |
+The setup grants cover both sides:
 
-## Deploying on Sparked Host
+- **Destination (the owner's room):** the owner overwrite grants Move Members and Connect, applied when the room is created.
+- **Source (the waiting room):** `/setup` grants Move Members to `@everyone` on the waiting room, so any member can move someone who is waiting there. Joining "Drag Me to Private" is the opt-in: you sit there because you want to be pulled.
 
-Sparked Host runs Pterodactyl with a Node.js egg. The typical flow is: the panel clones this repository into the server on install and runs `git pull` on boot, then runs a startup command.
+**Private rooms stay safe.** On a private room only the owner and the moderator role are granted Connect (everyone else is denied it). Since a dragger has to be able to Connect to the destination, nobody but the owner and mods can drop a waiting member into a given private room. There is no way to shove someone into a private room you do not control.
+
+**The one mild troll vector:** because everyone has Move Members on the waiting room, a member could at worst drag a waiting person into a public voice channel that member can already access. That is acceptable since waiting in "Drag Me to Private" is opt-in, and a public channel is one the person could have joined anyway. The same grant also lets a member disconnect someone sitting in the waiting room. Both are low stakes for a channel whose whole purpose is "sit here to get pulled." To lock it down, remove the `@everyone` Move Members overwrite on the waiting room and give it to a specific role instead.
+
+## Self-hosting on Sparked Host (Pterodactyl)
+
+The bot runs anywhere Node 18 or newer runs. On a Pterodactyl Node.js egg (such as Sparked Host) the panel clones this repository on install and runs `git pull` on boot, then runs a startup command.
 
 Suggested settings:
 
-- **Git repository:** this repo (add a deploy key or use a private access token if the repo is private).
-- **Install command / startup dependencies:** `npm install`
-- **Startup command:** `npm run deploy` on first boot to register commands, then switch to `npm start` for normal boots. Registering on every boot also works and is harmless; it just makes an extra API call.
-- **Node version:** 18 or newer. This was built and tested on Node 22.
+- **Git repository:** this repo (add a deploy key or a private access token if your fork is private).
+- **Install command:** `npm install`
+- **Startup command:** `npm run deploy` on the first boot to register commands, then switch to `npm start` for normal boots. Registering on every boot also works and is harmless; it just makes one extra API call.
+- **Node version:** 18 or newer. Built and tested on Node 22.
 - **Environment variables:** set `DISCORD_TOKEN` and `DISCORD_CLIENT_ID` in the panel's Startup tab rather than committing a `.env` file.
 
-### Persistence caveat
+### Keeping config across reboots
 
-The per-guild config lives in `data/guilds.json`, which is gitignored. A normal `git pull` on boot leaves it untouched. If the host's boot sequence runs `git clean -fdx` or otherwise wipes untracked files, that file is deleted and the bot forgets its lounges. If lounges disappear after a reboot, either move the startup off a destructive clean or just run `/setup` again; it repairs in place without creating duplicate channels. If you want the config to survive no matter what, point `DATA_DIR` at a persistent volume outside the repo directory.
+Per-server config lives in `data/guilds.json`, which is gitignored. A normal `git pull` on boot leaves it alone. If your host's boot sequence runs `git clean -fdx` or otherwise wipes untracked files, that file is deleted and the bot forgets its lounges. If a lounge disappears after a reboot, either move the startup off a destructive clean or just run `/setup` again; it repairs in place without creating duplicate channels. To keep config safe no matter what, point `DATA_DIR` at a persistent volume outside the repo directory.
 
 ## Project structure
 
@@ -148,20 +138,66 @@ src/
 │   ├── Command.ts              # Abstract command base class
 │   └── CommandManager.ts       # Command registry lookups
 ├── commands/
-│   ├── index.ts                # Command registry (single source of truth)
+│   ├── index.ts                # ← Command registry (single source of truth)
 │   ├── SetupCommand.ts         # /setup
 │   ├── SetModRoleCommand.ts    # /set-mod-role
 │   ├── PingCommand.ts          # /ping
 │   └── HelpCommand.ts          # /help
 ├── services/
-│   ├── VoiceLoungeService.ts   # Voice-state engine: create, move, delete, sweep
-│   ├── GuildConfigStore.ts     # Per-guild JSON persistence
+│   ├── VoiceLoungeService.ts   # ← Voice-state engine: create, move, transfer, delete, sweep
+│   ├── GuildConfigStore.ts     # Per-server JSON persistence
 │   ├── Environment.ts          # Config validation
 │   └── Logger.ts               # Contextual logging
 ├── index.ts                    # Entry point
 └── register.ts                 # Slash command registration
 ```
 
+## Scripts
+
+- `npm run build` compiles TypeScript to `dist/`
+- `npm run register` builds, then registers slash commands with Discord
+- `npm start` runs the compiled bot
+- `npm run dev` builds and runs in one step
+- `npm run deploy` builds, registers, then starts
+
+## Configuration
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DISCORD_TOKEN` | yes | Bot token from the Developer Portal |
+| `DISCORD_CLIENT_ID` | yes | Application (client) ID |
+| `DEVELOPER_IDS` | no | Comma-separated user IDs for developer-only commands |
+| `NODE_ENV` | no | `development` enables debug logging (defaults to `production`) |
+| `DATA_DIR` | no | Directory for the persisted config file (defaults to `data`) |
+
+## FAQ
+
+**Does one instance work across multiple servers?**
+Yes. Every server gets its own lounge, its own moderator role, and its own rooms, all keyed by server ID. Run `/setup` once in each server.
+
+**Do I need any privileged intents?**
+No. The bot uses the Guilds and Voice States intents, neither of which needs a toggle in the Developer Portal.
+
+**Why can everyone see private rooms in the channel list?**
+By design. A private room is visible but locked: people can see it exists, but only the owner and the people the owner pulls in can connect. It matches how the owner expects a private room to feel without hiding it entirely.
+
+**Someone deleted one of the lounge channels. How do I fix it?**
+Run `/setup` again. It reuses whatever still exists and recreates only what is missing.
+
+**What happens to rooms when the bot restarts?**
+On boot it sweeps every server: empty rooms are deleted and occupied rooms are re-adopted so they still clean up when they empty.
+
+**Can owners rename their rooms or set a user limit?**
+Yes. Owners get Manage Channel on their own room, so the usual channel edit options are theirs.
+
 ## License
 
-MIT License. See the LICENSE file.
+MIT License. See the [LICENSE](LICENSE) file.
+
+## Contributing
+
+1. Fork the repository
+2. Create your feature branch
+3. Commit your changes
+4. Push to the branch
+5. Open a Pull Request
