@@ -39,14 +39,16 @@ Per-guild configuration (the lounge channel IDs, the moderator role, and the lis
 
 Pulling someone out of the waiting room is a manual action the channel owner does in the Discord client (right click the person, Move To, pick your channel; or drag them). The bot does not move people around, it just sets up the permissions that let owners do it.
 
-Discord's rule for moving a member between two voice channels is that the person doing the move needs the **Move Members** permission in **both** the source channel and the destination channel. The member being moved does **not** need Connect on the destination: Move Members overrides that, which is exactly what makes dragging someone into a private room work without granting them anything first.
+Discord's rule for moving a member between two voice channels: the person doing the move needs **Move Members** in **both** the source and the destination channel, and must be able to **Connect** to the destination themselves. The member being moved does **not** need Connect on the destination, which is exactly what makes dragging someone into a private room work without granting them anything first.
 
 The setup grants cover both sides:
 
-- **Destination (the owner's temp channel):** the owner's permission overwrite grants Move Members (and Connect), applied when the channel is created.
-- **Source (the waiting room):** `/setup` grants Move Members to `@everyone` on the waiting room, so any member can move a waiting-room occupant.
+- **Destination (the owner's temp channel):** the owner's permission overwrite grants Move Members and Connect, applied when the channel is created.
+- **Source (the waiting room):** `/setup` grants Move Members to `@everyone` on the waiting room, so any member can move someone who is waiting there. Joining "Drag Me to Private" is the opt-in: you sit there because you want to be pulled.
 
-That `@everyone` grant is naturally scoped by the destination rule: a member can only *deposit* a waiting-room occupant into a channel where they also hold Move Members, which is only their own temp channel. They cannot pull waiting-room people into arbitrary channels. The one side effect worth knowing is that Move Members on the waiting room also lets any member *disconnect* someone who is sitting in the waiting room, since disconnecting only checks the source channel. For a channel whose entire purpose is "sit here to get pulled," that is low stakes, but if you would rather lock it down, remove the `@everyone` Move Members overwrite on the waiting room and give it to a specific role instead (members without it will not be able to drag from the waiting room).
+**Private rooms stay safe.** On a private temp channel only the owner and the moderator role are granted Connect (everyone else is denied it). Since a dragger has to be able to Connect to the destination, nobody but the owner and mods can drop a waiting member into a given private room. There is no way to shove someone into a private room you do not control.
+
+**The one mild troll vector:** because everyone has Move Members on the waiting room, a member could, at worst, drag a waiting person into a public voice channel that member can already access. That is acceptable since waiting in "Drag Me to Private" is opt-in, and a public channel is one the person could have joined anyway. The same grant also lets a member disconnect someone sitting in the waiting room. Both are low stakes for a channel whose whole purpose is "sit here to get pulled." If you would rather lock it down, remove the `@everyone` Move Members overwrite on the waiting room and give it to a specific role instead; members without it will not be able to drag from the waiting room.
 
 This was reasoned from Discord's documented Move Members behavior rather than verified against a live server, since that needs a bot token. If dragging does not behave as described, the waiting-room overwrite is the first thing to check.
 
