@@ -14,9 +14,31 @@ import { Logger } from './Logger.js';
 import { GuildConfigStore, GuildConfig } from './GuildConfigStore.js';
 
 /**
+ * Permissions granted to a channel owner (and the mod role): full control plus
+ * the ability to drag members in from the waiting room.
+ */
+const CONTROL_PERMS = [
+  PermissionFlagsBits.ViewChannel,
+  PermissionFlagsBits.Connect,
+  PermissionFlagsBits.Speak,
+  PermissionFlagsBits.ManageChannels,
+  PermissionFlagsBits.MoveMembers
+];
+
+/** The same control set expressed as a flag object for permissionOverwrites.edit. */
+const CONTROL_FLAGS = {
+  ViewChannel: true,
+  Connect: true,
+  Speak: true,
+  ManageChannels: true,
+  MoveMembers: true
+} as const;
+
+/**
  * The engine behind the voice lounge: watches voice-state changes, spins up a
  * temporary channel when a member joins a hub trigger, hands the creator control
- * of their channel, and tears the channel down once it empties.
+ * of their channel, transfers ownership if the owner leaves while others remain,
+ * and tears the channel down once it empties.
  */
 export class VoiceLoungeService {
   private static instance: VoiceLoungeService | null = null;
@@ -40,7 +62,7 @@ export class VoiceLoungeService {
   }
 
   /**
-   * Route a single voice-state change to create or clean up temp channels.
+   * Route a single voice-state change to create, track, or clean up temp channels.
    */
   private async handleVoiceStateUpdate(oldState: VoiceState, newState: VoiceState): Promise<void> {
     const guildId = newState.guild.id;
@@ -53,14 +75,19 @@ export class VoiceLoungeService {
     // A mute, deafen, or stream toggle fires this event without a channel change.
     if (oldId === newId) return;
 
-    // Someone left (or moved out of) a temp channel: clean it up if now empty.
+    // Left (or moved out of) a temp channel: update membership and clean up.
     if (oldId && this.store.getTempChannel(guildId, oldId)) {
-      await this.cleanupIfEmpty(oldState.guild, oldId);
+      await this.handleLeaveTemp(oldState, oldId);
+    }
+
+    // Joined a temp channel that is not a trigger: record membership for ownership
+    // transfer. Temp-channel joins are otherwise a no-op, which is what keeps the
+    // bot from recursing on its own move of the creator.
+    if (newId && this.store.getTempChannel(guildId, newId) && newState.member) {
+      await this.store.trackMemberJoin(guildId, newId, newState.member.id, Date.now());
     }
 
     // Joining a hub trigger spins up a fresh channel. Waiting room joins do nothing.
-    // Temp-channel joins do nothing either, which is what keeps the bot from
-    // recursing on its own move of the creator.
     if (newId === config.newPublicId) {
       await this.createTempChannel(newState, config, false);
     } else if (newId === config.newPrivateId) {
@@ -92,7 +119,13 @@ export class VoiceLoungeService {
       return;
     }
 
-    await this.store.addTempChannel(guild.id, channel.id, { ownerId: member.id, isPrivate });
+    // Seed the owner as the first member so ownership transfer has a baseline even
+    // if the move's join event is missed.
+    await this.store.addTempChannel(guild.id, channel.id, {
+      ownerId: member.id,
+      isPrivate,
+      members: { [member.id]: Date.now() }
+    });
 
     // Move the creator into their channel. If they already vanished, tear it down.
     try {
@@ -102,6 +135,73 @@ export class VoiceLoungeService {
       this.logger.warn(`createTempChannel - Could not move ${member.user.tag} into new channel, removing it:`, error);
       await this.deleteChannel(guild, channel.id);
     }
+  }
+
+  /**
+   * Handle a member leaving a temp channel: drop them from the record, delete the
+   * channel if it is now empty, or transfer ownership if the owner left.
+   */
+  private async handleLeaveTemp(oldState: VoiceState, channelId: string): Promise<void> {
+    const guild = oldState.guild;
+    const record = this.store.getTempChannel(guild.id, channelId);
+    if (!record) return;
+
+    const leaverId = oldState.member?.id;
+    if (leaverId) {
+      await this.store.trackMemberLeave(guild.id, channelId, leaverId);
+    }
+
+    const channel = guild.channels.cache.get(channelId);
+    if (!channel || channel.type !== ChannelType.GuildVoice) {
+      await this.store.removeTempChannel(guild.id, channelId);
+      return;
+    }
+
+    if (channel.members.size === 0) {
+      await this.deleteChannel(guild, channelId);
+      return;
+    }
+
+    // Owner left but others remain: hand control to the longest-present member.
+    if (leaverId && record.ownerId === leaverId) {
+      await this.transferOwnership(channel as VoiceChannel);
+    }
+  }
+
+  /**
+   * Transfer ownership of a temp channel to the member who has been present
+   * longest, granting them control and revoking the previous owner's overwrite.
+   */
+  private async transferOwnership(channel: VoiceChannel): Promise<void> {
+    const guildId = channel.guild.id;
+    const record = this.store.getTempChannel(guildId, channel.id);
+    if (!record) return;
+
+    const previousOwnerId = record.ownerId;
+
+    // Longest-present member who is actually still connected.
+    const nextOwnerId = Object.entries(record.members)
+      .filter(([userId]) => channel.members.has(userId) && userId !== previousOwnerId)
+      .sort((a, b) => a[1] - b[1])
+      .map(([userId]) => userId)[0];
+
+    if (!nextOwnerId) return;
+
+    try {
+      await channel.permissionOverwrites.delete(previousOwnerId, 'Temp channel owner left');
+    } catch (error) {
+      this.logger.warn(`transferOwnership - Failed to clear old owner overwrite on ${channel.id}:`, error);
+    }
+
+    try {
+      await channel.permissionOverwrites.edit(nextOwnerId, CONTROL_FLAGS);
+    } catch (error) {
+      this.logger.warn(`transferOwnership - Failed to grant new owner overwrite on ${channel.id}:`, error);
+      return;
+    }
+
+    await this.store.setTempOwner(guildId, channel.id, nextOwnerId);
+    this.logger.info(`transferOwnership - Channel ${channel.id} ownership moved from ${previousOwnerId} to ${nextOwnerId}`);
   }
 
   /**
@@ -116,14 +216,6 @@ export class VoiceLoungeService {
     isPrivate: boolean,
     modRoleId?: string
   ): OverwriteResolvable[] {
-    const controlPerms = [
-      PermissionFlagsBits.ViewChannel,
-      PermissionFlagsBits.Connect,
-      PermissionFlagsBits.Speak,
-      PermissionFlagsBits.ManageChannels,
-      PermissionFlagsBits.MoveMembers
-    ];
-
     const overwrites: OverwriteResolvable[] = [
       {
         id: guild.roles.everyone.id,
@@ -132,32 +224,15 @@ export class VoiceLoungeService {
       },
       {
         id: ownerId,
-        allow: controlPerms
+        allow: CONTROL_PERMS
       }
     ];
 
     if (modRoleId && guild.roles.cache.has(modRoleId)) {
-      overwrites.push({ id: modRoleId, allow: controlPerms });
+      overwrites.push({ id: modRoleId, allow: CONTROL_PERMS });
     }
 
     return overwrites;
-  }
-
-  /**
-   * Delete a temp channel if it holds no members, and drop its record either way.
-   */
-  private async cleanupIfEmpty(guild: Guild, channelId: string): Promise<void> {
-    const channel = guild.channels.cache.get(channelId);
-
-    if (!channel) {
-      // Already gone; just forget it.
-      await this.store.removeTempChannel(guild.id, channelId);
-      return;
-    }
-
-    if (channel.type === ChannelType.GuildVoice && channel.members.size === 0) {
-      await this.deleteChannel(guild, channelId);
-    }
   }
 
   private async deleteChannel(guild: Guild, channelId: string): Promise<void> {
@@ -254,9 +329,16 @@ export class VoiceLoungeService {
         }
 
         // Still in use: make sure we have a record so it gets cleaned up later.
+        // Rebuild the member list from who is currently connected, since exact
+        // join times do not survive a restart.
         if (!this.store.getTempChannel(guildId, channelId)) {
-          const recovered = this.recoverOwnership(channel);
-          await this.store.addTempChannel(guildId, channelId, recovered);
+          const recovered = this.recoverOwnership(channel as VoiceChannel);
+          const now = Date.now();
+          const members: Record<string, number> = {};
+          for (const userId of (channel as VoiceChannel).members.keys()) {
+            members[userId] = now;
+          }
+          await this.store.addTempChannel(guildId, channelId, { ...recovered, members });
           this.logger.info(`sweepOrphans - Re-adopted occupied temp channel ${channelId} in guild ${guildId}`);
         }
       }

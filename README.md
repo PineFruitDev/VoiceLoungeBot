@@ -12,7 +12,7 @@ Running `/setup` creates a **VOICE HUB** category with three channels that every
 - **➕ New Public** spawns a public temporary channel when someone joins it. Anyone can see and join the new channel.
 - **➕ New Private** spawns a private temporary channel. Everyone can see it exists, but only the owner and the people they pull in can connect.
 
-When a member spawns a channel they become its owner: they get Manage Channel on it (rename, set a user limit, and so on) plus the ability to drag members in from the waiting room. When the last person leaves a temporary channel, the bot deletes it.
+When a member spawns a channel they become its owner: they get Manage Channel on it (rename, set a user limit, and so on) plus the ability to drag members in from the waiting room. If the owner leaves while other people are still in the channel, control passes to whoever has been in the channel longest so the room stays manageable. When the last person leaves a temporary channel, the bot deletes it.
 
 ## Commands
 
@@ -32,7 +32,7 @@ When a member spawns a channel they become its owner: they get Manage Channel on
 
 ## How it works
 
-The bot listens to the `VoiceStateUpdate` gateway event. When a member joins one of the two trigger channels, it creates a new voice channel under the lounge category, writes permission overwrites that make the joining member the owner, and moves them in. When a member leaves a temporary channel and it is empty, the channel is deleted.
+The bot listens to the `VoiceStateUpdate` gateway event. When a member joins one of the two trigger channels, it creates a new voice channel under the lounge category, writes permission overwrites that make the joining member the owner, and moves them in. It tracks who is in each temporary channel and when they joined, so if the owner leaves it can hand control to the longest-present member. When a member leaves a temporary channel and it is empty, the channel is deleted.
 
 Per-guild configuration (the lounge channel IDs, the moderator role, and the list of live temporary channels) is stored in `data/guilds.json`. This lets the bot recover after a restart: on startup it sweeps every configured lounge, deletes temporary channels that are now empty, and re-adopts any that are still in use so they get cleaned up later.
 

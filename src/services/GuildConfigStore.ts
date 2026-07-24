@@ -8,6 +8,8 @@ import { Logger } from './Logger.js';
 export interface TempChannelRecord {
   ownerId: string;
   isPrivate: boolean;
+  /** Current members, keyed by user ID, valued by join time (ms epoch). */
+  members: Record<string, number>;
 }
 
 /**
@@ -66,9 +68,13 @@ export class GuildConfigStore {
       const raw = await fs.readFile(this.filePath, 'utf-8');
       const parsed = JSON.parse(raw) as StoreShape;
       this.data = { guilds: parsed.guilds ?? {} };
-      // Defensive: ensure every guild has a tempChannels map.
+      // Defensive: ensure every guild has a tempChannels map and every temp
+      // channel record has a members map, even if written by an older version.
       for (const config of Object.values(this.data.guilds)) {
         if (!config.tempChannels) config.tempChannels = {};
+        for (const record of Object.values(config.tempChannels)) {
+          if (!record.members) record.members = {};
+        }
       }
       this.logger.info(`load - Loaded config for ${Object.keys(this.data.guilds).length} guild(s)`);
     } catch (error: any) {
@@ -130,7 +136,7 @@ export class GuildConfigStore {
   public async addTempChannel(guildId: string, channelId: string, record: TempChannelRecord): Promise<void> {
     const config = this.data.guilds[guildId];
     if (!config) return;
-    config.tempChannels[channelId] = record;
+    config.tempChannels[channelId] = { ...record, members: record.members ?? {} };
     await this.persist();
   }
 
@@ -138,6 +144,33 @@ export class GuildConfigStore {
     const config = this.data.guilds[guildId];
     if (!config || !config.tempChannels[channelId]) return;
     delete config.tempChannels[channelId];
+    await this.persist();
+  }
+
+  /**
+   * Record a member joining a temp channel, keeping the earliest known join time
+   * so ownership can pass to the longest-present member later.
+   */
+  public async trackMemberJoin(guildId: string, channelId: string, userId: string, joinedAt: number): Promise<void> {
+    const record = this.data.guilds[guildId]?.tempChannels[channelId];
+    if (!record) return;
+    if (record.members[userId] === undefined) {
+      record.members[userId] = joinedAt;
+      await this.persist();
+    }
+  }
+
+  public async trackMemberLeave(guildId: string, channelId: string, userId: string): Promise<void> {
+    const record = this.data.guilds[guildId]?.tempChannels[channelId];
+    if (!record || record.members[userId] === undefined) return;
+    delete record.members[userId];
+    await this.persist();
+  }
+
+  public async setTempOwner(guildId: string, channelId: string, ownerId: string): Promise<void> {
+    const record = this.data.guilds[guildId]?.tempChannels[channelId];
+    if (!record) return;
+    record.ownerId = ownerId;
     await this.persist();
   }
 
