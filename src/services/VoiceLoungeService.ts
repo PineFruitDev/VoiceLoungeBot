@@ -26,8 +26,12 @@ const CONTROL_PERMS = [
   PermissionFlagsBits.MoveMembers
 ];
 
-/** The same control set expressed as a flag object for permissionOverwrites.edit. */
-const CONTROL_FLAGS = {
+/**
+ * The same control set expressed as a flag object for permissionOverwrites.edit.
+ * Exported because `/setup` writes it onto already-open rooms when the mod role
+ * changes, and the two have to grant the same thing.
+ */
+export const CONTROL_FLAGS = {
   ViewChannel: true,
   Connect: true,
   Speak: true,
@@ -191,7 +195,7 @@ export class VoiceLoungeService {
    *
    * Lowest free rather than ever-increasing: delete Private #2 while #1 and #3
    * are busy and the next private room is #2 again, so the list stays tidy
-   * instead of drifting up forever. Numbering is per type, so Public # 1 and
+   * instead of drifting up forever. Numbering is per type, so Public #1 and
    * Private #1 can be live at the same time.
    */
   private reserveIndex(guildId: string, isPrivate: boolean): number {

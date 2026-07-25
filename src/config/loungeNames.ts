@@ -24,14 +24,11 @@ export const NEW_PRIVATE_NAME = '➕﹕🔒 New Private';
 export const NEW_PUBLIC_NAME = '➕﹕🔓 New Public';
 
 /**
- * Names for the rooms the bot spins up, numbered per type.
- *
- * The spacing differs between the two on purpose: these match the convention as
- * specified, down to the space after the "#" on public rooms. If you would
- * rather they matched, edit both lines and the index parser follows.
+ * Names for the rooms the bot spins up, numbered per type. Edit these and the
+ * index parser below follows, so a number is only ever written in one place.
  */
 export const PRIVATE_ROOM_NAME = (index: number | string): string => `🔒﹕Private #${index}`;
-export const PUBLIC_ROOM_NAME = (index: number | string): string => `🔓﹕Public # ${index}`;
+export const PUBLIC_ROOM_NAME = (index: number | string): string => `🔓﹕Public #${index}`;
 
 /** The room name for a given type and number. */
 export function tempRoomName(isPrivate: boolean, index: number): string {

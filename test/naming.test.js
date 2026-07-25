@@ -9,10 +9,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { ChannelType } from 'discord.js';
+import { ChannelType, PermissionFlagsBits } from 'discord.js';
 import { GuildConfigStore } from '../dist/services/GuildConfigStore.js';
 import { VoiceLoungeService } from '../dist/services/VoiceLoungeService.js';
 import { SetupCommand } from '../dist/commands/SetupCommand.js';
+import { ALL_COMMANDS } from '../dist/commands/index.js';
 import {
   CATEGORY_NAME,
   WAITING_ROOM_NAME,
@@ -42,7 +43,7 @@ const SPEC = {
   newPrivate: `\u{2795}${SMALL_COLON}\u{1F512} New Private`,
   newPublic: `\u{2795}${SMALL_COLON}\u{1F513} New Public`,
   privateRoom: index => `\u{1F512}${SMALL_COLON}Private #${index}`,
-  publicRoom: index => `\u{1F513}${SMALL_COLON}Public # ${index}`
+  publicRoom: index => `\u{1F513}${SMALL_COLON}Public #${index}`
 };
 
 let store;
@@ -330,6 +331,108 @@ test('setup builds a lounge from scratch in an empty server', async () => {
   for (const id of [config.waitingRoomId, config.newPublicId, config.newPrivateId]) {
     assert.equal(guild.channels.cache.get(id).parentId, category.id);
   }
+});
+
+test('setup sets the moderator role and applies it to rooms already open', async () => {
+  const ctx = await setup();
+  const mods = ctx.guild.addRole('mods');
+
+  // A room is already open when the role is set, so it has to be caught up.
+  const open = await spawnRoom(ctx, 'user-1', true);
+
+  const interaction = createInteraction(ctx.guild, { 'mod-role': mods });
+  await new SetupCommand().execute(interaction);
+
+  assert.equal(store.getGuild(ctx.guildId).modRoleId, 'mods');
+
+  const overwrite = open.channel.permissionOverwrites.cache.get('mods');
+  assert.ok(overwrite, 'the open room should have gained a mod overwrite');
+  assert.ok(overwrite.allow.has(PermissionFlagsBits.Connect), 'mods must be able to enter a private room');
+  assert.ok(overwrite.allow.has(PermissionFlagsBits.ManageChannels));
+
+  // And rooms made afterwards get it when they are built.
+  const later = await spawnRoom(ctx, 'user-2', true);
+  assert.ok(later.channel.permissionOverwrites.cache.get('mods').allow.has(PermissionFlagsBits.ManageChannels));
+
+  assert.match(interaction.lastReply(), /Moderator role:\*\* <@&mods>/);
+});
+
+test('a bare setup run leaves the moderator role alone', async () => {
+  const ctx = await setup();
+  const mods = ctx.guild.addRole('mods');
+
+  await new SetupCommand().execute(createInteraction(ctx.guild, { 'mod-role': mods }));
+  assert.equal(store.getGuild(ctx.guildId).modRoleId, 'mods');
+
+  // Repairing the channels must never cost the server its mod role.
+  const interaction = createInteraction(ctx.guild);
+  await new SetupCommand().execute(interaction);
+
+  assert.equal(store.getGuild(ctx.guildId).modRoleId, 'mods', 'the role should survive a repair run');
+  assert.match(interaction.lastReply(), /unchanged/);
+});
+
+test('changing the moderator role takes control off the old one', async () => {
+  const ctx = await setup();
+  const oldMods = ctx.guild.addRole('old-mods');
+  const newMods = ctx.guild.addRole('new-mods');
+
+  await new SetupCommand().execute(createInteraction(ctx.guild, { 'mod-role': oldMods }));
+  const open = await spawnRoom(ctx, 'user-1', true);
+  assert.ok(open.channel.permissionOverwrites.cache.has('old-mods'));
+
+  await new SetupCommand().execute(createInteraction(ctx.guild, { 'mod-role': newMods }));
+
+  assert.equal(store.getGuild(ctx.guildId).modRoleId, 'new-mods');
+  assert.equal(
+    open.channel.permissionOverwrites.cache.has('old-mods'), false,
+    'the previous role should not keep control of a live room'
+  );
+  assert.ok(open.channel.permissionOverwrites.cache.has('new-mods'));
+});
+
+test('setup can clear the moderator role', async () => {
+  const ctx = await setup();
+  const mods = ctx.guild.addRole('mods');
+
+  await new SetupCommand().execute(createInteraction(ctx.guild, { 'mod-role': mods }));
+  const open = await spawnRoom(ctx, 'user-1', true);
+  assert.ok(open.channel.permissionOverwrites.cache.has('mods'));
+
+  const interaction = createInteraction(ctx.guild, { 'clear-mod-role': true });
+  await new SetupCommand().execute(interaction);
+
+  assert.equal(store.getGuild(ctx.guildId).modRoleId, undefined);
+  assert.equal(open.channel.permissionOverwrites.cache.has('mods'), false, 'control should be taken back');
+  assert.match(interaction.lastReply(), /cleared/);
+
+  // A room built afterwards must not carry the cleared role either.
+  const later = await spawnRoom(ctx, 'user-2', true);
+  assert.equal(later.channel.permissionOverwrites.cache.has('mods'), false);
+});
+
+test('setting and clearing the moderator role at once is refused', async () => {
+  const ctx = await setup();
+  const mods = ctx.guild.addRole('mods');
+
+  const interaction = createInteraction(ctx.guild, { 'mod-role': mods, 'clear-mod-role': true });
+  await new SetupCommand().execute(interaction);
+
+  assert.match(interaction.lastReply(), /Pick one/);
+  assert.equal(store.getGuild(ctx.guildId).modRoleId, undefined, 'neither option should have been applied');
+});
+
+test('the command registry no longer carries a separate mod role command', () => {
+  const names = ALL_COMMANDS.map(command => command.getName());
+
+  assert.ok(names.includes('setup'));
+  assert.equal(names.includes('set-mod-role'), false, 'the mod role lives on /setup now');
+
+  // /help is built from the registry, so it follows on its own.
+  const setup = ALL_COMMANDS.find(command => command.getName() === 'setup');
+  const options = setup.data.toJSON().options.map(option => option.name);
+  assert.deepEqual(options.slice().sort(), ['clear-mod-role', 'mod-role']);
+  assert.ok(options.every(name => setup.data.toJSON().options.find(o => o.name === name).required !== true));
 });
 
 test('the README documents the names the code actually uses', () => {
