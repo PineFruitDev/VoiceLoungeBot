@@ -73,6 +73,8 @@ That number is the sum of the permissions the bot actually uses:
 
 Place the bot's role high enough in **Server Settings > Roles** that it can manage the lounge channels.
 
+If a room gets created but you are left sitting in the trigger channel, the bot could not move you. It logs the reason, naming the exact permission that is missing. See [the bot creates a room but does not move me into it](#the-bot-creates-a-room-but-does-not-move-me-into-it).
+
 ### 3. Configure
 
 ```bash
@@ -97,6 +99,29 @@ npm start          # start the bot
 ```
 
 Then run `/setup` in your server and the lounge appears.
+
+## Troubleshooting
+
+### The bot creates a room but does not move me into it
+
+Discord only lets you move a member into a voice channel if you can see that channel, hold **Move Members** on it, and could **Connect** to it yourself. All three are checked against the destination, so the bot has to be able to enter a room before it can put anyone in one.
+
+Two things cover that:
+
+- The bot writes an overwrite for **itself** on every room it creates, granting View Channel, Connect, Move Members, and Manage Channels. Without it a private room would deny Connect to `@everyone`, and since the bot is part of `@everyone` like anyone else, it would lock itself out of the room it just made.
+- The rest comes from the server-wide grant in the invite integer above.
+
+When a move fails anyway, the bot logs the cause rather than failing quietly:
+
+```
+[VoiceLoungeService] moveIntoChannel - Could not move Sky#0001 into "🔊 Sky". The bot is
+missing these server permissions: Move Members. Re-invite it with permissions=288359440,
+or grant them to its role in Server Settings > Roles.
+```
+
+If the log says the bot holds everything it needs, the block is a channel or category override instead. Check the permission overrides on the lounge category and its channels, and make sure the bot's role sits above them in **Server Settings > Roles**.
+
+A member who hangs up in the moment between the room being created and the move landing is normal, not an error. The bot logs it as routine and deletes the empty room it just made, so nothing is left behind.
 
 ## Dragging people in from the waiting room
 
@@ -167,7 +192,13 @@ src/
 │   └── Logger.ts               # Contextual logging
 ├── index.ts                    # Entry point
 └── register.ts                 # Slash command registration
+
+test/
+├── harness.js                  # Fake guild, members, and Discord's move permission rules
+└── voice-lounge.test.js        # Join to create, move, teardown, and ownership handoff
 ```
+
+The tests run on `node --test` with no test framework to install. The harness models how Discord resolves a permission on a channel (server-wide grant, then the `@everyone` overwrite, then the member overwrite), so a move that Discord would reject fails in the tests too.
 
 ## Scripts
 
@@ -176,6 +207,7 @@ src/
 - `npm start` runs the compiled bot
 - `npm run dev` builds and runs in one step
 - `npm run deploy` builds, registers, then starts
+- `npm test` builds, then runs the test suite against the compiled output
 
 `npm install` also builds automatically via a `postinstall` step, so a host that only runs `npm install` (or `npm install --production`) still ends up with a compiled `dist/`. Run `node index.js` and the root launcher starts the compiled bot.
 
