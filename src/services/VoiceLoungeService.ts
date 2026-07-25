@@ -12,6 +12,7 @@ import {
 } from 'discord.js';
 import { Logger } from './Logger.js';
 import { GuildConfigStore, GuildConfig } from './GuildConfigStore.js';
+import { tempRoomName, parseRoomIndex } from '../config/loungeNames.js';
 
 /**
  * Permissions granted to a channel owner (and the mod role): full control plus
@@ -82,6 +83,14 @@ const MOVE_PERMS = INVITE_PERMS.filter(({ name }) => name !== 'Speak');
 export class VoiceLoungeService {
   private logger = new Logger({ context: 'VoiceLoungeService' });
 
+  /**
+   * Room numbers handed out but not yet written to the store, keyed by guild and
+   * room type. Creating a channel is a round trip to Discord, and two people can
+   * hit a trigger inside that window; without this they would both be told the
+   * store's lowest free number and both rooms would come out with the same one.
+   */
+  private reservedIndexes = new Map<string, Set<number>>();
+
   constructor(
     private client: Client,
     private store: GuildConfigStore
@@ -138,18 +147,19 @@ export class VoiceLoungeService {
     const guild = state.guild;
     if (!member) return;
 
-    const name = `${isPrivate ? '🔒' : '🔊'} ${member.displayName}`;
     const botId = guild.members.me?.id ?? this.client.user?.id;
+    const index = this.reserveIndex(guild.id, isPrivate);
 
     let channel: VoiceChannel;
     try {
       channel = await guild.channels.create({
-        name: name.slice(0, 100),
+        name: tempRoomName(isPrivate, index).slice(0, 100),
         type: ChannelType.GuildVoice,
         parent: config.categoryId,
         permissionOverwrites: this.buildOverwrites(guild, member.id, isPrivate, config.modRoleId, botId)
       });
     } catch (error) {
+      this.releaseIndex(guild.id, isPrivate, index);
       this.logger.error(`createTempChannel - Failed to create channel for ${member.user.tag}:`, error);
       return;
     }
@@ -159,8 +169,12 @@ export class VoiceLoungeService {
     await this.store.addTempChannel(guild.id, channel.id, {
       ownerId: member.id,
       isPrivate,
+      index,
       members: { [member.id]: Date.now() }
     });
+
+    // The record now holds the number, so the reservation has done its job.
+    this.releaseIndex(guild.id, isPrivate, index);
 
     const moved = await this.moveIntoChannel(member, channel);
     if (moved) {
@@ -169,6 +183,47 @@ export class VoiceLoungeService {
     }
 
     await this.discardUnusedChannel(guild, channel);
+  }
+
+  /**
+   * Claim the lowest free number for a room of this type and hold it until the
+   * room is recorded.
+   *
+   * Lowest free rather than ever-increasing: delete Private #2 while #1 and #3
+   * are busy and the next private room is #2 again, so the list stays tidy
+   * instead of drifting up forever. Numbering is per type, so Public # 1 and
+   * Private #1 can be live at the same time.
+   */
+  private reserveIndex(guildId: string, isPrivate: boolean): number {
+    const reserved = this.reservationsFor(guildId, isPrivate);
+    const taken = new Set<number>(reserved);
+
+    const config = this.store.getGuild(guildId);
+    for (const record of Object.values(config?.tempChannels ?? {})) {
+      if (record.isPrivate === isPrivate && typeof record.index === 'number') {
+        taken.add(record.index);
+      }
+    }
+
+    let index = 1;
+    while (taken.has(index)) index++;
+
+    reserved.add(index);
+    return index;
+  }
+
+  private releaseIndex(guildId: string, isPrivate: boolean, index: number): void {
+    this.reservationsFor(guildId, isPrivate).delete(index);
+  }
+
+  private reservationsFor(guildId: string, isPrivate: boolean): Set<number> {
+    const key = `${guildId}:${isPrivate ? 'private' : 'public'}`;
+    let reserved = this.reservedIndexes.get(key);
+    if (!reserved) {
+      reserved = new Set<number>();
+      this.reservedIndexes.set(key, reserved);
+    }
+    return reserved;
   }
 
   /**
@@ -389,6 +444,8 @@ export class VoiceLoungeService {
         }
       }
 
+      const toAdopt: Array<{ channel: VoiceChannel; ownerId: string; isPrivate: boolean; index: number | null }> = [];
+
       for (const channelId of candidateIds) {
         const channel = guild.channels.cache.get(channelId);
 
@@ -403,18 +460,37 @@ export class VoiceLoungeService {
         }
 
         // Still in use: make sure we have a record so it gets cleaned up later.
+        if (!this.store.getTempChannel(guildId, channelId)) {
+          const voice = channel as VoiceChannel;
+          const recovered = this.recoverOwnership(voice);
+          toAdopt.push({
+            channel: voice,
+            ...recovered,
+            index: parseRoomIndex(voice.name, recovered.isPrivate)
+          });
+        }
+      }
+
+      // Rooms that still carry a number in their name go first, so their number
+      // is on record before a room that has lost its name is handed a fresh one.
+      // In the other order the fresh one could be handed a number an existing
+      // room is already wearing.
+      toAdopt.sort((a, b) => Number(b.index !== null) - Number(a.index !== null));
+
+      for (const { channel, ownerId, isPrivate, index } of toAdopt) {
+        const resolvedIndex = index ?? this.reserveIndex(guildId, isPrivate);
+
         // Rebuild the member list from who is currently connected, since exact
         // join times do not survive a restart.
-        if (!this.store.getTempChannel(guildId, channelId)) {
-          const recovered = this.recoverOwnership(channel as VoiceChannel);
-          const now = Date.now();
-          const members: Record<string, number> = {};
-          for (const userId of (channel as VoiceChannel).members.keys()) {
-            members[userId] = now;
-          }
-          await this.store.addTempChannel(guildId, channelId, { ...recovered, members });
-          this.logger.info(`sweepOrphans - Re-adopted occupied temp channel ${channelId} in guild ${guildId}`);
+        const now = Date.now();
+        const members: Record<string, number> = {};
+        for (const userId of channel.members.keys()) {
+          members[userId] = now;
         }
+
+        await this.store.addTempChannel(guildId, channel.id, { ownerId, isPrivate, index: resolvedIndex, members });
+        this.releaseIndex(guildId, isPrivate, resolvedIndex);
+        this.logger.info(`sweepOrphans - Re-adopted occupied temp channel ${channel.id} in guild ${guildId} as #${resolvedIndex}`);
       }
     }
 

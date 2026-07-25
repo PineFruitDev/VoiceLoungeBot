@@ -14,11 +14,13 @@ On-demand public and private voice channels that clean up after themselves.
 
 VoiceLoungeBot turns one hub into unlimited voice channels. Instead of a wall of half-used rooms, your members make their own on the spot and the bot clears them away when they are done.
 
-Run /setup once and the bot builds a VOICE HUB with three channels everyone can see and join:
+Run /setup once and the bot builds a VOICE LOUNGE category with three channels everyone can see and join:
 
 - New Public: join it to spawn a public room anyone can enter.
 - New Private: join it to spawn a private room that everyone can see but only you and the people you pull in can join.
 - Drag Me to Private: a waiting room where people sit so a room owner can drag them into a private room.
+
+Rooms are numbered per type and reuse the lowest free number, so the channel list stays tidy instead of climbing forever. Every name is configurable in one file, and /setup renames an existing lounge in place when you change one.
 
 Whoever creates a room owns it. Owners get Manage Channel on their room, so they can rename it, set a user limit, and drag people in from the waiting room. If the owner leaves while others are still talking, control passes to whoever has been in the room longest. When the last person leaves, the room disappears.
 
