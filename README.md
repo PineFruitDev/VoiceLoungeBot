@@ -11,7 +11,7 @@ Built on the [TSTemplateBot](https://github.com/PineFruitDev/TSTemplateBot) arch
 - **Tidy Numbering**: Rooms are numbered per type and reuse the lowest free number, so the list stays compact instead of drifting up forever
 - **Renameable Everything**: Every channel name lives in one small module, and `/setup` renames an existing lounge in place when you change it
 - **Drag Me to Private Waiting Room**: A lobby where people wait to be dragged into a private room, set up with the permissions that let owners do the dragging
-- **Owner Controls**: Whoever creates a room gets Manage Channel on it, so they can rename it, set a user limit, and drag people in from the waiting room
+- **Owner Controls**: Whoever creates a room gets Manage Channel and Manage Permissions on it, so they can rename it, set a user limit, decide who gets in, and drag people over from the waiting room
 - **Ownership Handoff**: If the owner leaves while others are still talking, control passes to whoever has been in the room longest
 - **Automatic Cleanup**: When the last person leaves a room, the bot deletes it. Empty rooms left behind by a restart are swept on the next boot
 - **Moderator Role**: Point `/setup mod-role:@Role` at a role to give it full control over every temporary room, private ones included
@@ -82,6 +82,30 @@ Two things worth knowing:
 
 `/setup` is safe to run again. An existing lounge is reused and, if the names have changed, renamed in place, so nothing is duplicated. It recreates only what is actually missing, which is what makes it the fix for a deleted channel or a lost config file.
 
+### What the room owner can do
+
+Whoever joins a trigger channel owns the room that comes out of it. The bot writes them a permission overwrite on that channel the moment it is created, so the room is theirs straight away with nothing to claim or configure.
+
+Right click the room, **Edit Channel**, and an owner can:
+
+| They can | Because they hold |
+|----------|-------------------|
+| Rename the room | Manage Channel |
+| Set a user limit | Manage Channel |
+| Change the bitrate, region, or slowmode | Manage Channel |
+| Decide who can see or join, and add specific people | Manage Permissions |
+| Drag someone in from the waiting room | Move Members |
+| Mute, deafen, or move people already in the room | Move Members |
+| Delete the room early | Manage Channel |
+
+**Manage Permissions is what makes a private room usable.** Without it Discord greys out the Permissions tab, and the owner of a private room can only pull people in by dragging them from the waiting room, with no way to simply grant someone access. It is the permission Discord calls `MANAGE_ROLES` in its API.
+
+An owner can only hand out permissions they hold themselves, so this does not become a route to anything outside their own room. The moderator role, if you set one, gets exactly the same control over every room.
+
+Two things owners do **not** get: anything outside their own room, and any say over rooms they did not create.
+
+One caveat worth knowing: because owners can edit their room's permissions, an owner who revokes the bot's access to their own room can leave one behind that the bot can no longer clean up. Delete it by hand if it happens. Everything else about the room stays automatic.
+
 ### The moderator role
 
 A moderator role gets full control of **every** temporary room, private ones included: view, connect, manage, and drag people in. It is optional, and it is set through `/setup` rather than a command of its own, because setting it is part of setting a lounge up and a repair run costs nothing.
@@ -150,7 +174,7 @@ That number is the sum of the permissions the bot actually uses:
 |------------|------------------|
 | View Channels | See the lounge and the rooms it manages |
 | Manage Channels | Create and delete temporary rooms |
-| Manage Roles | Write the permission overwrites on each room |
+| Manage Roles | Write the permission overwrites on each room, and hand Manage Permissions to the owner. A bot can only grant permissions it holds itself |
 | Move Members | Move a member into the room the bot just created for them |
 | Connect | Required alongside Move Members to move members into voice |
 | Speak | So the owner and mod overwrites it grants are valid |
@@ -389,7 +413,10 @@ Numbers are handed out lowest-free-first per type, so a room that was deleted le
 On boot it sweeps every server: empty rooms are deleted and occupied rooms are re-adopted so they still clean up when they empty.
 
 **Can owners rename their rooms or set a user limit?**
-Yes. Owners get Manage Channel on their own room, so the usual channel edit options are theirs.
+Yes. Owners get Manage Channel and Manage Permissions on their own room, so the usual channel edit options are theirs, including the Permissions tab. See [What the room owner can do](#what-the-room-owner-can-do).
+
+**I own a private room but I cannot let anyone in.**
+That is Manage Permissions missing, and it is fixed. Restart the bot to pick the fix up. Rooms that already exist keep the overwrites they were built with, so make a fresh room to see it; the old one sorts itself out when it empties and gets deleted. No re-invite is needed, the bot was already invited with the permission it needs to grant this.
 
 ## License
 
