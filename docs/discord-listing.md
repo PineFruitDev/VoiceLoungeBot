@@ -4,7 +4,7 @@ Text for the Discord Developer Portal and App Directory. Paste as-is.
 
 ## About Me (bot profile description, 400 character max)
 
-Self-serve voice channels for your server. Join New Public or New Private and I build a room just for you, then delete it once it empties. Own your room: rename it, set a limit, and drag people in from the Drag Me to Private waiting room. One /setup command, mod role included, and /remove to undo it all. Works across any number of servers, no privileged intents.
+Self-serve voice channels for your server. Join New Public or New Private and I build a room just for you, then delete it once it empties. Own your room: rename it, set a limit, choose who gets in, and drag people over from the Drag Me to Private waiting room. One /setup command, mod role included, and /remove to undo it all. Works across any number of servers, no privileged intents.
 
 ## Short description (tagline)
 
@@ -22,7 +22,7 @@ Run /setup once and the bot builds a VOICE LOUNGE category with three channels e
 
 Rooms are numbered per type and reuse the lowest free number, so the channel list stays tidy instead of climbing forever. Every name is configurable in one file, and /setup renames an existing lounge in place when you change one.
 
-Whoever creates a room owns it. Owners get Manage Channel on their room, so they can rename it, set a user limit, and drag people in from the waiting room. If the owner leaves while others are still talking, control passes to whoever has been in the room longest. When the last person leaves, the room disappears.
+Whoever creates a room owns it. Owners get Manage Channel and Manage Permissions on their room, so they can rename it, set a user limit, decide who can see or join it, and drag people in from the waiting room. If the owner leaves while others are still talking, control passes to whoever has been in the room longest. When the last person leaves, the room disappears.
 
 Give a role full control of every room, private ones included, with /setup mod-role:@Moderators. It is perfect for staff who need to hop into any room to help out, and it is part of the same setup command rather than a second step to remember.
 

@@ -15,14 +15,24 @@ import { GuildConfigStore, GuildConfig } from './GuildConfigStore.js';
 import { tempRoomName, parseRoomIndex } from '../config/loungeNames.js';
 
 /**
- * Permissions granted to a channel owner (and the mod role): full control plus
- * the ability to drag members in from the waiting room.
+ * Permissions granted to a channel owner (and the mod role).
+ *
+ * ManageChannels is what lets an owner rename their room, set a user limit, and
+ * change the bitrate. ManageRoles is what Discord shows as **Manage
+ * Permissions**, and without it the Permissions tab of Edit Channel stays
+ * locked: the owner of a private room could drag people in from the waiting
+ * room but could not grant anyone access directly, which does not match what
+ * owning a room is supposed to feel like.
+ *
+ * The bot can only hand out permissions it holds itself, and its invite
+ * integer covers every one of these. A test pins that both ways round.
  */
 const CONTROL_PERMS = [
   PermissionFlagsBits.ViewChannel,
   PermissionFlagsBits.Connect,
   PermissionFlagsBits.Speak,
   PermissionFlagsBits.ManageChannels,
+  PermissionFlagsBits.ManageRoles,
   PermissionFlagsBits.MoveMembers
 ];
 
@@ -36,6 +46,7 @@ export const CONTROL_FLAGS = {
   Connect: true,
   Speak: true,
   ManageChannels: true,
+  ManageRoles: true,
   MoveMembers: true
 } as const;
 
@@ -77,6 +88,13 @@ export const REQUIRED_PERMISSION_INTEGER = INVITE_PERMS
 
 /** The subset of the above that a failed move is worth checking against. */
 const MOVE_PERMS = INVITE_PERMS.filter(({ name }) => name !== 'Speak');
+
+/**
+ * Everything the invite integer grants, as one bitfield. A bot can only hand
+ * out permissions it holds, so this is the ceiling on every overwrite the bot
+ * writes, and a test checks nothing exceeds it.
+ */
+export const INVITE_PERMISSION_BITS = INVITE_PERMS.reduce((total, { flag }) => total | flag, 0n);
 
 /**
  * The engine behind the voice lounge: watches voice-state changes, spins up a
@@ -374,26 +392,34 @@ export class VoiceLoungeService {
     modRoleId?: string,
     botId?: string
   ): OverwriteResolvable[] {
+    // Every overwrite states its type. Left off, discord.js has to work out
+    // member from role by looking the id up in its caches, and throws outright
+    // if it finds neither. This bot runs without the GuildMembers intent, so
+    // that cache is only ever populated by what happens to have come past on the
+    // gateway, and a miss would fail the whole channel creation rather than one
+    // overwrite. Saying which it is removes the guesswork.
     const overwrites: OverwriteResolvable[] = [
       {
         id: guild.roles.everyone.id,
+        type: OverwriteType.Role,
         allow: [PermissionFlagsBits.ViewChannel],
         deny: isPrivate ? [PermissionFlagsBits.Connect] : []
       },
       {
         id: ownerId,
+        type: OverwriteType.Member,
         allow: CONTROL_PERMS
       }
     ];
 
     if (modRoleId && guild.roles.cache.has(modRoleId)) {
-      overwrites.push({ id: modRoleId, allow: CONTROL_PERMS });
+      overwrites.push({ id: modRoleId, type: OverwriteType.Role, allow: CONTROL_PERMS });
     }
 
     // Skipped when the bot is somehow the owner: that overwrite already covers
     // everything here, and Discord rejects two overwrites for the same id.
     if (botId && botId !== ownerId) {
-      overwrites.push({ id: botId, allow: BOT_PERMS });
+      overwrites.push({ id: botId, type: OverwriteType.Member, allow: BOT_PERMS });
     }
 
     return overwrites;

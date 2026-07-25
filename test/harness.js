@@ -36,6 +36,14 @@ export class MissingPermissions extends Error {
   }
 }
 
+/** discord.js refusing to guess whether an overwrite is for a member or a role. */
+export class UncachedOverwriteTarget extends Error {
+  constructor(id) {
+    super(`Supplied parameter is not a cached User or Role: ${id}`);
+    this.name = 'TypeError [InvalidType]';
+  }
+}
+
 /** Discord's error for moving someone who is no longer in a voice channel. */
 export class NotConnected extends Error {
   constructor() {
@@ -97,7 +105,7 @@ class FakeVoiceChannel {
     for (const raw of permissionOverwrites) {
       cache.set(raw.id, new Overwrite({
         id: raw.id,
-        type: raw.id === EVERYONE_ID || guild.roles.cache.has(raw.id) ? OverwriteType.Role : OverwriteType.Member,
+        type: raw.type ?? guild.inferOverwriteType(raw.id),
         allow: raw.allow,
         deny: raw.deny
       }));
@@ -177,6 +185,8 @@ class FakeGuild {
     };
     this.nextChannelId = 1;
     this.listeners = [];
+    // Who the client has in its user cache. The bot itself always is.
+    this.knownUsers = new Set([BOT_ID]);
   }
 
   async createChannel(options) {
@@ -191,6 +201,22 @@ class FakeGuild {
     return channel;
   }
 
+  /**
+   * Work out whether an overwrite is for a role or a member, the way discord.js
+   * does when the caller did not say: look in the role cache, then the user
+   * cache, and throw if it is in neither.
+   *
+   * The throw is the part that matters. This bot has no GuildMembers intent, so
+   * `client.users` only holds whoever the gateway has mentioned, and a miss
+   * fails the whole channel creation rather than one overwrite. Passing the
+   * type explicitly is what keeps that from ever coming up.
+   */
+  inferOverwriteType(id) {
+    if (id === EVERYONE_ID || this.roles.cache.has(id)) return OverwriteType.Role;
+    if (this.knownUsers.has(id)) return OverwriteType.Member;
+    throw new UncachedOverwriteTarget(id);
+  }
+
   /** Register a role so overwrites for it resolve as a role rather than a member. */
   addRole(id) {
     const role = { id, name: id };
@@ -198,9 +224,16 @@ class FakeGuild {
     return role;
   }
 
-  /** Register a member and return it. `failMove` forces a specific move failure. */
-  addMember(id, displayName) {
+  /**
+   * Register a member and return it.
+   *
+   * `cached` is whether the client has this user in `client.users`. Pass false
+   * for someone the bot has never seen, which is the state any member can be in
+   * without the GuildMembers intent.
+   */
+  addMember(id, displayName, { cached = true } = {}) {
     const guild = this;
+    if (cached) this.knownUsers.add(id);
     const member = {
       id,
       displayName,
