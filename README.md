@@ -113,21 +113,38 @@ The setup grants cover both sides:
 
 **The one mild troll vector:** because everyone has Move Members on the waiting room, a member could at worst drag a waiting person into a public voice channel that member can already access. That is acceptable since waiting in "Drag Me to Private" is opt-in, and a public channel is one the person could have joined anyway. The same grant also lets a member disconnect someone sitting in the waiting room. Both are low stakes for a channel whose whole purpose is "sit here to get pulled." To lock it down, remove the `@everyone` Move Members overwrite on the waiting room and give it to a specific role instead.
 
-## Self-hosting on Sparked Host (Pterodactyl)
+## Self-hosting on Pterodactyl / Sparked Host
 
-The bot runs anywhere Node 18 or newer runs. On a Pterodactyl Node.js egg (such as Sparked Host) the panel clones this repository on install and runs `git pull` on boot, then runs a startup command.
+The bot runs anywhere Node 18 or newer runs, and it is built to boot out of the box on a Pterodactyl Node.js egg (such as Sparked Host) whose startup is locked to `git pull`, `npm install --production`, then `node /home/container/${STARTUP_FILE}`.
 
-Suggested settings:
+Two details make that work without touching the locked startup:
 
-- **Git repository:** this repo (add a deploy key or a private access token if your fork is private).
-- **Install command:** `npm install`
-- **Startup command:** `npm run deploy` on the first boot to register commands, then switch to `npm start` for normal boots. Registering on every boot also works and is harmless; it just makes one extra API call.
-- **Node version:** 18 or newer. Built and tested on Node 22.
-- **Environment variables:** set `DISCORD_TOKEN` and `DISCORD_CLIENT_ID` in the panel's Startup tab rather than committing a `.env` file.
+- A root `index.js` launcher hands off to the compiled `dist/index.js`, so `STARTUP_FILE=index.js` boots the bot even though the source is TypeScript.
+- A `postinstall` step compiles the TypeScript, so `npm install --production` produces `dist/` on the host. Because `--production` skips dev dependencies, `typescript` ships as a regular dependency for this reason; the compiler is only used at install time, not at runtime.
 
-### Keeping config across reboots
+Panel settings:
 
-Per-server config lives in `data/guilds.json`, which is gitignored. A normal `git pull` on boot leaves it alone. If your host's boot sequence runs `git clean -fdx` or otherwise wipes untracked files, that file is deleted and the bot forgets its lounges. If a lounge disappears after a reboot, either move the startup off a destructive clean or just run `/setup` again; it repairs in place without creating duplicate channels. To keep config safe no matter what, point `DATA_DIR` at a persistent volume outside the repo directory.
+- **Git repository:** this repo (add a deploy key or a personal access token if your fork is private).
+- **`STARTUP_FILE`:** `index.js`
+- **Node version:** 18 or newer. Built and tested on Node 20 and 22.
+- **Environment variables:** set `DISCORD_TOKEN` and `DISCORD_CLIENT_ID`. You can either add them on the panel's Startup tab or drop a `.env` file in the container root (`/home/container/.env`); the bot reads `.env` from its working directory, which is the container root. Panel variables win if you set the same key in both places.
+
+That is everything for normal operation: on each boot the panel pulls the latest code, `npm install --production` rebuilds `dist/`, and the launcher starts the bot.
+
+### Registering the slash commands
+
+The locked startup only runs the bot, not the one-off command registration. To register (or after you change a command), point the panel at the register entry for a single boot, then switch back:
+
+1. Set `STARTUP_FILE=dist/register.js` and restart. It builds, registers the commands with Discord, and exits.
+2. Set `STARTUP_FILE=index.js` again and restart for normal operation.
+
+Registration needs the same `DISCORD_TOKEN` and `DISCORD_CLIENT_ID`. If your host lets you run a console command instead, `npm run register` does the same thing.
+
+### Where config is stored
+
+Per-server config lives in `data/guilds.json`. `DATA_DIR` defaults to the relative path `data`, so it resolves to `/home/container/data` and is created on first write with no extra setup; there is no absolute path to configure and the container does not need a dedicated data-directory variable. A normal `git pull` on boot leaves it alone (it is gitignored).
+
+If your host's boot sequence runs `git clean -fdx` or otherwise wipes untracked files, that file is deleted and the bot forgets its lounges. If a lounge disappears after a reboot, either move the startup off a destructive clean or just run `/setup` again; it repairs in place without creating duplicate channels. To keep config safe no matter what, point `DATA_DIR` at a persistent path outside the repo directory.
 
 ## Project structure
 
@@ -159,6 +176,8 @@ src/
 - `npm start` runs the compiled bot
 - `npm run dev` builds and runs in one step
 - `npm run deploy` builds, registers, then starts
+
+`npm install` also builds automatically via a `postinstall` step, so a host that only runs `npm install` (or `npm install --production`) still ends up with a compiled `dist/`. Run `node index.js` and the root launcher starts the compiled bot.
 
 ## Configuration
 
