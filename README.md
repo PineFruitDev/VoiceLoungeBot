@@ -8,6 +8,8 @@ Built on the [TSTemplateBot](https://github.com/PineFruitDev/TSTemplateBot) arch
 
 - **Join to Create**: Join **New Public** or **New Private** and the bot builds a fresh voice channel and drops you into it
 - **Public and Private Rooms**: Public rooms anyone can join; private rooms everyone can see but only the owner and the people they pull in can enter
+- **Tidy Numbering**: Rooms are numbered per type and reuse the lowest free number, so the list stays compact instead of drifting up forever
+- **Renameable Everything**: Every channel name lives in one small module, and `/setup` renames an existing lounge in place when you change it
 - **Drag Me to Private Waiting Room**: A lobby where people wait to be dragged into a private room, set up with the permissions that let owners do the dragging
 - **Owner Controls**: Whoever creates a room gets Manage Channel on it, so they can rename it, set a user limit, and drag people in from the waiting room
 - **Ownership Handoff**: If the owner leaves while others are still talking, control passes to whoever has been in the room longest
@@ -19,11 +21,53 @@ Built on the [TSTemplateBot](https://github.com/PineFruitDev/TSTemplateBot) arch
 
 ## How It Works
 
-The bot watches the `VoiceStateUpdate` gateway event. When a member joins one of the two trigger channels, it creates a voice channel under the lounge category, writes permission overwrites that make the joining member the owner, and moves them in. Joining the waiting room does nothing on its own; it is a place to sit while an owner drags you across.
+The bot watches the `VoiceStateUpdate` gateway event. When a member joins one of the two trigger channels, it creates a voice channel under the lounge category, names it after its type and the lowest free number, writes permission overwrites that make the joining member the owner, and moves them in. Joining the waiting room does nothing on its own; it is a place to sit while an owner drags you across.
 
 Each temporary room tracks who is inside and when they joined, so if the owner leaves the bot can hand control to the next longest-present member. When a room empties, it is deleted. On startup the bot reconciles every server it is in: empty temporary rooms are removed and occupied ones are re-adopted so they still get cleaned up later.
 
 Everything the bot needs to remember (the lounge channel IDs, the moderator role, and the live rooms) is stored per server in a small JSON file, so it all survives a restart.
+
+## Channel names
+
+The lounge looks like this:
+
+```
+| VOICE LOUNGE |
+├── 👀﹕Drag Me to Private
+├── ➕﹕🔒 New Private        joining this creates  🔒﹕Private #1
+└── ➕﹕🔓 New Public         joining this creates  🔓﹕Public # 1
+```
+
+| What | Name |
+|------|------|
+| Category | `\| VOICE LOUNGE \|` |
+| Waiting room | `👀﹕Drag Me to Private` |
+| Private trigger | `➕﹕🔒 New Private` |
+| Public trigger | `➕﹕🔓 New Public` |
+| Private room | `🔒﹕Private #1`, `🔒﹕Private #2`, ... |
+| Public room | `🔓﹕Public # 1`, `🔓﹕Public # 2`, ... |
+
+The character between the emoji and the words is **U+FE55 SMALL COLON** (`﹕`), not an ASCII colon. It sits tighter against the emoji in Discord's channel list, and unlike `:` it cannot be mistaken for the start of an emoji shortcode. A test pins the code point, so an editor that normalises it to `:` fails the build instead of quietly renaming every channel in every server on the next `/setup`.
+
+### How rooms are numbered
+
+Rooms are numbered **per type**, and each new room takes the **lowest number that is currently free**:
+
+- Public and private rooms count separately, so `🔓﹕Public # 1` and `🔒﹕Private #1` can be live at the same time.
+- Delete `🔒﹕Private #2` while `#1` and `#3` are still busy and the next private room is `#2` again, not `#4`. The list stays compact instead of climbing forever.
+- Numbers are only ever held by live rooms. When the last room of a type empties, the next one starts at `#1`.
+- If an owner renames their own room, its number goes with the name. The bot skips that number until the room is deleted, then hands it out again.
+
+Numbers are recovered from the channel names on restart, so a reboot does not renumber rooms that are still in use.
+
+### Changing the names
+
+Every name is in [`src/config/loungeNames.ts`](src/config/loungeNames.ts) and nowhere else. Edit it, restart the bot, and run `/setup` again: existing channels are **renamed in place**, keeping their IDs, their permission overrides, and anyone currently sitting in them. No duplicates are created and the existing category is reused.
+
+Two things worth knowing:
+
+- Add the old value to the matching `LEGACY_*` list in the same file. `/setup` uses it to find channels by their previous name when the stored IDs have been lost, which is what turns a config wipe into a repair rather than a second lounge.
+- Discord rate limits channel renames to two per ten minutes per channel. `/setup` only renames a channel whose name has actually changed, so running it repeatedly costs nothing, but do not expect to rename the same channel back and forth in quick succession.
 
 ## Commands
 
@@ -34,7 +78,7 @@ Everything the bot needs to remember (the lounge channel IDs, the moderator role
 | `/ping` | Anyone | Latency check |
 | `/help` | Anyone | List the commands |
 
-`/setup` is safe to run again. If the lounge already exists it reuses the current channels instead of duplicating them, so it also rebuilds the lounge if the channels were deleted.
+`/setup` is safe to run again. An existing lounge is reused and, if the names have changed, renamed in place, so nothing is duplicated. It recreates only what is actually missing, which is what makes it the fix for a deleted channel or a lost config file.
 
 ## Quick Start
 
@@ -114,7 +158,7 @@ Two things cover that:
 When a move fails anyway, the bot logs the cause rather than failing quietly:
 
 ```
-[VoiceLoungeService] moveIntoChannel - Could not move Sky#0001 into "🔊 Sky". The bot is
+[VoiceLoungeService] moveIntoChannel - Could not move Sky#0001 into "🔓﹕Public # 1". The bot is
 missing these server permissions: Move Members. Re-invite it with permissions=288359440,
 or grant them to its role in Server Settings > Roles.
 ```
@@ -185,6 +229,8 @@ src/
 │   ├── SetModRoleCommand.ts    # /set-mod-role
 │   ├── PingCommand.ts          # /ping
 │   └── HelpCommand.ts          # /help
+├── config/
+│   └── loungeNames.ts          # ← Every channel name, in one place
 ├── services/
 │   ├── VoiceLoungeService.ts   # ← Voice-state engine: create, move, transfer, delete, sweep
 │   ├── GuildConfigStore.ts     # Per-server JSON persistence
@@ -195,7 +241,8 @@ src/
 
 test/
 ├── harness.js                  # Fake guild, members, and Discord's move permission rules
-└── voice-lounge.test.js        # Join to create, move, teardown, and ownership handoff
+├── voice-lounge.test.js        # Join to create, move, teardown, and ownership handoff
+└── naming.test.js              # Channel names, room numbering, and the /setup rename
 ```
 
 The tests run on `node --test` with no test framework to install. The harness models how Discord resolves a permission on a channel (server-wide grant, then the `@everyone` overwrite, then the member overwrite), so a move that Discord would reject fails in the tests too.
@@ -234,6 +281,12 @@ By design. A private room is visible but locked: people can see it exists, but o
 
 **Someone deleted one of the lounge channels. How do I fix it?**
 Run `/setup` again. It reuses whatever still exists and recreates only what is missing.
+
+**I changed the names in `loungeNames.ts`. Do I have to delete the old channels?**
+No. Restart the bot and run `/setup`. Existing channels are renamed in place, so their IDs, permission overrides, and occupants are all kept, and the existing category is reused rather than a second one being made.
+
+**Why did my new room come out as #2 when there is only one other room?**
+Numbers are handed out lowest-free-first per type, so a room that was deleted leaves its number free for the next one. If room #1 is still occupied, the next room is #2 even if #3 and #4 were used earlier and have since gone.
 
 **What happens to rooms when the bot restarts?**
 On boot it sweeps every server: empty rooms are deleted and occupied rooms are re-adopted so they still clean up when they empty.
