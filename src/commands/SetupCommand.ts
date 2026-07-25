@@ -11,7 +11,7 @@ import {
 } from 'discord.js';
 import { Command, CommandHelpInfo } from '../core/Command.js';
 import { GuildConfigStore, GuildConfig } from '../services/GuildConfigStore.js';
-import { CONTROL_FLAGS } from '../services/VoiceLoungeService.js';
+import { CONTROL_FLAGS, BASE_CONTROL_FLAGS, diagnoseManagePermissions } from '../services/VoiceLoungeService.js';
 import { Logger } from '../services/Logger.js';
 import {
   CATEGORY_NAME,
@@ -165,7 +165,30 @@ export class SetupCommand extends Command {
       `🔓 **New Public:** <#${newPublic.channel.id}> (join to spawn a public channel you control)\n` +
       `🔒 **New Private:** <#${newPrivate.channel.id}> (join to spawn a private channel only you can enter)` +
       modLine +
-      renameLine
+      renameLine +
+      this.managePermissionsWarning(guild, category.channel.id)
+    );
+  }
+
+  /**
+   * The line `/setup` adds when the bot cannot hand owners Manage Permissions.
+   *
+   * Rooms work without it, so this is a warning rather than a failure. It goes
+   * here because `/setup` is already ephemeral and already restricted to people
+   * who can manage the server, which makes it the one place the person who can
+   * actually fix the role will see it, and it says nothing at all when there is
+   * nothing to fix.
+   */
+  private managePermissionsWarning(guild: Guild, categoryId: string): string {
+    const diagnosis = diagnoseManagePermissions(guild, categoryId);
+    if (diagnosis.ok) return '';
+
+    this.logger.warn(`execute - Guild ${guild.id} cannot grant room owners Manage Permissions. ${diagnosis.reason}`);
+
+    return (
+      `\n\n⚠️ **Room owners will not get Manage Permissions.**\n${diagnosis.reason}\n` +
+      `Rooms still work: owners can rename them, set a user limit, and drag people in from the waiting room. ` +
+      `They just cannot open the Permissions tab to let someone into a private room directly.`
     );
   }
 
@@ -229,7 +252,14 @@ export class SetupCommand extends Command {
           await (channel as VoiceChannel).permissionOverwrites.delete(previousRoleId, 'No longer the lounge moderator role');
         }
         if (nextRoleId) {
-          await (channel as VoiceChannel).permissionOverwrites.edit(nextRoleId, CONTROL_FLAGS);
+          // Manage Permissions is the one grant a server can refuse. Falling
+          // back keeps a mod role change working on servers that have not given
+          // the bot that permission, rather than silently updating no rooms.
+          try {
+            await (channel as VoiceChannel).permissionOverwrites.edit(nextRoleId, CONTROL_FLAGS);
+          } catch {
+            await (channel as VoiceChannel).permissionOverwrites.edit(nextRoleId, BASE_CONTROL_FLAGS);
+          }
         }
         updated++;
       } catch (error) {

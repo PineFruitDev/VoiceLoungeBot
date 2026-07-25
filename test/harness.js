@@ -5,6 +5,19 @@
 // could Connect to it itself, resolved through @everyone then member overwrites
 // exactly as Discord resolves them. That is what makes the private-room
 // regression reproducible without a live gateway.
+//
+// It also models the two rules Discord applies to writing an overwrite, which
+// are not the same rule and are the reason room creation broke:
+//
+//   Create Guild Channel: "Setting MANAGE_ROLES permission in channels is only
+//   possible for guild administrators." Holding Manage Roles server wide does
+//   not buy you this, and the whole create is rejected, not just the overwrite.
+//
+//   Edit Channel Permissions: "Only permissions your bot has in the guild or
+//   parent channel (if applicable) can be allowed/denied."
+//
+// A bot invited the normal way passes the second and fails the first, so a room
+// has to be created without Manage Permissions and given it on the next call.
 
 import { ChannelType, Collection, Events, OverwriteType, PermissionFlagsBits, PermissionsBitField } from 'discord.js';
 import {
@@ -26,6 +39,11 @@ export const DEFAULT_BOT_PERMISSIONS = [
   PermissionFlagsBits.Connect,
   PermissionFlagsBits.Speak
 ];
+
+/** The same invite with Manage Permissions withheld, which is the broken case. */
+export const BOT_WITHOUT_MANAGE_ROLES = DEFAULT_BOT_PERMISSIONS.filter(
+  flag => flag !== PermissionFlagsBits.ManageRoles
+);
 
 /** Discord's error for "you do not have permission to do that". */
 export class MissingPermissions extends Error {
@@ -66,8 +84,36 @@ class Overwrite {
   }
 }
 
+/**
+ * Layer one channel's overwrites onto a member's permissions the way Discord
+ * does: deny first, then allow, @everyone before the member's own overwrite.
+ */
+function applyOverwrites(bits, cache, member) {
+  for (const id of [EVERYONE_ID, member.id]) {
+    const overwrite = cache.get(id);
+    if (!overwrite) continue;
+    bits &= ~overwrite.deny.bitfield;
+    bits |= overwrite.allow.bitfield;
+  }
+  return bits;
+}
+
+/** Build the overwrite cache a channel is created with. */
+function buildOverwriteCache(guild, permissionOverwrites = []) {
+  const cache = new Map();
+  for (const raw of permissionOverwrites) {
+    cache.set(raw.id, new Overwrite({
+      id: raw.id,
+      type: raw.type ?? guild.inferOverwriteType(raw.id),
+      allow: raw.allow,
+      deny: raw.deny
+    }));
+  }
+  return cache;
+}
+
 class FakeCategoryChannel {
-  constructor(guild, { id, name }) {
+  constructor(guild, { id, name, permissionOverwrites = [] }) {
     this.guild = guild;
     this.id = id;
     this.name = name;
@@ -75,6 +121,24 @@ class FakeCategoryChannel {
     this.parentId = null;
     this.renames = 0;
     this.deleted = false;
+    this.permissionOverwrites = { cache: buildOverwriteCache(guild, permissionOverwrites) };
+  }
+
+  /** What a member ends up with here, which is what a child channel inherits. */
+  permissionsFor(member) {
+    if (member.permissions.has(PermissionFlagsBits.Administrator)) {
+      return bitfield([PermissionFlagsBits.Administrator]).add(member.permissions.bitfield);
+    }
+    return new PermissionsBitField(applyOverwrites(member.permissions.bitfield, this.permissionOverwrites.cache, member));
+  }
+
+  /** Take a permission away from someone on this category, as an admin would. */
+  denyPermission(id, flag) {
+    this.permissionOverwrites.cache.set(id, new Overwrite({
+      id,
+      type: id === EVERYONE_ID || this.guild.roles.cache.has(id) ? OverwriteType.Role : OverwriteType.Member,
+      deny: [flag]
+    }));
   }
 
   async setName(name) {
@@ -101,15 +165,7 @@ class FakeVoiceChannel {
     this.deleted = false;
     this.renames = 0;
 
-    const cache = new Map();
-    for (const raw of permissionOverwrites) {
-      cache.set(raw.id, new Overwrite({
-        id: raw.id,
-        type: raw.type ?? guild.inferOverwriteType(raw.id),
-        allow: raw.allow,
-        deny: raw.deny
-      }));
-    }
+    const cache = buildOverwriteCache(guild, permissionOverwrites);
 
     this.permissionOverwrites = {
       cache,
@@ -118,6 +174,9 @@ class FakeVoiceChannel {
         const allow = Object.entries(flags)
           .filter(([, on]) => on)
           .map(([name]) => PermissionFlagsBits[name]);
+
+        this.assertCanGrant(allow);
+
         cache.set(id, new Overwrite({
           id,
           type: id === EVERYONE_ID || guild.roles.cache.has(id) ? OverwriteType.Role : OverwriteType.Member,
@@ -128,6 +187,35 @@ class FakeVoiceChannel {
         cache.delete(id);
       }
     };
+  }
+
+  /**
+   * Discord's rule for editing an overwrite: only permissions the bot has in
+   * the guild or the parent category can be allowed. Manage Roles is the one
+   * that bites here, because it is also what the endpoint itself requires, so a
+   * category that takes it away fails the call outright.
+   */
+  assertCanGrant(allow) {
+    const bot = this.guild.members.me;
+    if (bot.permissions.has(PermissionFlagsBits.Administrator)) return;
+
+    for (const flag of allow) {
+      if (!this.effectivePermissions(bot).has(flag)) {
+        throw new MissingPermissions(`Bot cannot grant ${new PermissionsBitField(flag).toArray().join(', ')} here`);
+      }
+    }
+  }
+
+  /** Guild permissions, then the category's overwrites, then this channel's. */
+  effectivePermissions(member) {
+    let bits = member.permissions.bitfield;
+
+    const category = this.parentId ? this.guild.channels.cache.get(this.parentId) : null;
+    if (category?.permissionOverwrites) {
+      bits = applyOverwrites(bits, category.permissionOverwrites.cache, member);
+    }
+
+    return new PermissionsBitField(applyOverwrites(bits, this.permissionOverwrites.cache, member));
   }
 
   async delete() {
@@ -153,19 +241,11 @@ class FakeVoiceChannel {
 
   /**
    * Resolve one permission for a member on this channel the way Discord does:
-   * server-wide grant, then the @everyone overwrite, then the member overwrite.
+   * server-wide grant, then the category, then the @everyone overwrite, then
+   * the member overwrite.
    */
   allows(member, flag) {
-    let allowed = member.permissions.has(flag);
-
-    for (const id of [EVERYONE_ID, member.id]) {
-      const overwrite = this.permissionOverwrites.cache.get(id);
-      if (!overwrite) continue;
-      if (overwrite.deny.has(flag)) allowed = false;
-      if (overwrite.allow.has(flag)) allowed = true;
-    }
-
-    return allowed;
+    return this.effectivePermissions(member).has(flag);
   }
 }
 
@@ -190,7 +270,28 @@ class FakeGuild {
   }
 
   async createChannel(options) {
+    this.assertCanCreate(options);
     return this.addChannel({ ...options, id: `chan-${this.nextChannelId++}` });
+  }
+
+  /**
+   * Discord's rule for creating a channel: "Setting MANAGE_ROLES permission in
+   * channels is only possible for guild administrators." Note what this is not.
+   * It is not "only permissions the bot holds", which Manage Roles would pass;
+   * administrator is its own bar, and nothing short of it clears this one.
+   *
+   * The whole request is rejected, so the room never appears at all. That is
+   * the regression: one optional permission in one overwrite, and every join to
+   * a trigger channel does nothing.
+   */
+  assertCanCreate(options) {
+    if (this.members.me.permissions.has(PermissionFlagsBits.Administrator)) return;
+
+    for (const raw of options.permissionOverwrites ?? []) {
+      if (bitfield(raw.allow).has(PermissionFlagsBits.ManageRoles)) {
+        throw new MissingPermissions('Missing Permissions');
+      }
+    }
   }
 
   addChannel(options) {

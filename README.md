@@ -100,6 +100,8 @@ Right click the room, **Edit Channel**, and an owner can:
 
 **Manage Permissions is what makes a private room usable.** Without it Discord greys out the Permissions tab, and the owner of a private room can only pull people in by dragging them from the waiting room, with no way to simply grant someone access. It is the permission Discord calls `MANAGE_ROLES` in its API.
 
+It is also the one thing on this list a server can withhold. Discord will not let a bot put Manage Permissions into an overwrite while creating a channel unless the bot is a full administrator, so the bot creates the room first and adds Manage Permissions on a second call, where the rule is the ordinary one about only granting what you hold. If that second call is refused, the room is still created and everything else in the table above still works. The bot logs it once per server and `/setup` says so too, naming what to change. Nothing about a missing Manage Permissions can stop rooms from being created.
+
 An owner can only hand out permissions they hold themselves, so this does not become a route to anything outside their own room. The moderator role, if you set one, gets exactly the same control over every room.
 
 Two things owners do **not** get: anything outside their own room, and any say over rooms they did not create.
@@ -174,7 +176,7 @@ That number is the sum of the permissions the bot actually uses:
 |------------|------------------|
 | View Channels | See the lounge and the rooms it manages |
 | Manage Channels | Create and delete temporary rooms |
-| Manage Roles | Write the permission overwrites on each room, and hand Manage Permissions to the owner. A bot can only grant permissions it holds itself |
+| Manage Roles | Write the permission overwrites on each room, and hand Manage Permissions to the owner. A bot can only grant permissions it holds itself. This is the only one the bot treats as optional: without it rooms are still created, owners just do not get the Permissions tab |
 | Move Members | Move a member into the room the bot just created for them |
 | Connect | Required alongside Move Members to move members into voice |
 | Speak | So the owner and mod overwrites it grants are valid |
@@ -416,7 +418,12 @@ On boot it sweeps every server: empty rooms are deleted and occupied rooms are r
 Yes. Owners get Manage Channel and Manage Permissions on their own room, so the usual channel edit options are theirs, including the Permissions tab. See [What the room owner can do](#what-the-room-owner-can-do).
 
 **I own a private room but I cannot let anyone in.**
-That is Manage Permissions missing, and it is fixed. Restart the bot to pick the fix up. Rooms that already exist keep the overwrites they were built with, so make a fresh room to see it; the old one sorts itself out when it empties and gets deleted. No re-invite is needed, the bot was already invited with the permission it needs to grant this.
+That is Manage Permissions missing. Restart the bot to pick up the current version. Rooms that already exist keep the overwrites they were built with, so make a fresh room to see it; the old one sorts itself out when it empties and gets deleted. No re-invite is needed, the bot was already invited with the permission it needs to grant this.
+
+If a fresh room still leaves the Permissions tab greyed out, the server is refusing the grant rather than the bot forgetting to ask. Run `/setup`: it checks and tells you exactly what to change, which is usually granting the bot's role **Manage Permissions** in **Server Settings > Roles**, or clearing a permission override on the lounge category that takes it away again.
+
+**Joining a trigger channel does nothing and the log says `50013` on `POST /guilds/.../channels`.**
+That was a bug in the release that first granted owners Manage Permissions, and it is fixed. Discord rejects the whole channel-create request, not just the one overwrite, when a non-administrator bot asks to put Manage Permissions in it, so no room was created at all. Restart the bot to pick up the fix. No re-invite and no permission change is needed.
 
 ## License
 
