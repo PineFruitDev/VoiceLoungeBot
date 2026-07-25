@@ -27,6 +27,13 @@ export interface GuildConfig {
   waitingRoomId: string;
   newPublicId: string;
   newPrivateId: string;
+  /**
+   * Whether the bot created the lounge category itself, as opposed to adopting
+   * one that was already in the server. `/remove` will not delete a category it
+   * knows it did not make. Absent on records written before this was tracked,
+   * which reads as "no record either way" rather than as false.
+   */
+  categoryCreatedByBot?: boolean;
   modRoleId?: string;
   /** Active temporary channels, keyed by channel ID. */
   tempChannels: Record<string, TempChannelRecord>;
@@ -122,7 +129,7 @@ export class GuildConfigStore {
    */
   public async setLounge(
     guildId: string,
-    lounge: Pick<GuildConfig, 'categoryId' | 'waitingRoomId' | 'newPublicId' | 'newPrivateId'>
+    lounge: Pick<GuildConfig, 'categoryId' | 'waitingRoomId' | 'newPublicId' | 'newPrivateId' | 'categoryCreatedByBot'>
   ): Promise<void> {
     const existing = this.data.guilds[guildId];
     this.data.guilds[guildId] = {
@@ -130,6 +137,16 @@ export class GuildConfigStore {
       modRoleId: existing?.modRoleId,
       tempChannels: existing?.tempChannels ?? {}
     };
+    await this.persist();
+  }
+
+  /**
+   * Forget a guild entirely, putting the bot back where it was before `/setup`.
+   * Used by `/remove` once the channels are gone.
+   */
+  public async removeGuild(guildId: string): Promise<void> {
+    if (!this.data.guilds[guildId]) return;
+    delete this.data.guilds[guildId];
     await this.persist();
   }
 

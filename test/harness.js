@@ -66,12 +66,19 @@ class FakeCategoryChannel {
     this.type = ChannelType.GuildCategory;
     this.parentId = null;
     this.renames = 0;
+    this.deleted = false;
   }
 
   async setName(name) {
     this.name = name;
     this.renames++;
     return this;
+  }
+
+  async delete() {
+    if (this.failDelete) throw this.failDelete;
+    this.deleted = true;
+    this.guild.channels.cache.delete(this.id);
   }
 }
 
@@ -116,6 +123,7 @@ class FakeVoiceChannel {
   }
 
   async delete() {
+    if (this.failDelete) throw this.failDelete;
     this.deleted = true;
     this.guild.channels.cache.delete(this.id);
     for (const member of [...this.members.values()]) {
@@ -323,22 +331,61 @@ export async function createLounge(client, store, guildId) {
   return lounge;
 }
 
+/** Discord's error for acting on a channel that is no longer there. */
+export class UnknownChannel extends Error {
+  constructor() {
+    super('Unknown Channel');
+    this.name = 'DiscordAPIError[10003]';
+    this.code = 10003;
+  }
+}
+
 /**
- * A stand-in for the slash-command interaction `/setup` receives. `options` is
- * keyed by option name, so `{ 'mod-role': role }` is what Discord hands over
- * when someone types `/setup mod-role:@Moderators`.
+ * A stand-in for the slash-command interaction a command receives.
+ *
+ * `options` is keyed by option name, so `{ 'mod-role': role }` is what Discord
+ * hands over for `/setup mod-role:@Moderators`. `answer` decides what the person
+ * does with a confirmation prompt: press the confirm button, press cancel, or
+ * walk away and let it expire.
  */
-export function createInteraction(guild, options = {}) {
+export function createInteraction(guild, options = {}, { userId = 'admin-1', answer = 'confirm' } = {}) {
   const replies = [];
-  const push = content => { replies.push(typeof content === 'string' ? content : content.content); };
+  const payloads = [];
+  const push = content => {
+    payloads.push(content);
+    replies.push(typeof content === 'string' ? content : content.content);
+  };
+
+  // What `editReply` hands back: the message the buttons are attached to.
+  const prompt = {
+    awaitMessageComponent: async ({ filter } = {}) => {
+      if (answer === 'timeout') {
+        throw new Error('Collector received no interactions before ending with reason: time');
+      }
+
+      const button = {
+        customId: answer === 'cancel' ? 'lounge-remove-cancel' : 'lounge-remove-confirm',
+        user: { id: userId },
+        update: async content => push(content)
+      };
+
+      if (filter && !filter(button)) throw new Error('Collector filter rejected the interaction');
+      return button;
+    }
+  };
 
   return {
     guild,
     replies,
+    payloads,
+    user: { id: userId, tag: `${userId}#0001` },
     lastReply: () => replies[replies.length - 1],
-    deferReply: async () => {},
-    reply: async content => push(content),
-    editReply: async content => push(content),
+    lastPayload: () => payloads[payloads.length - 1],
+    /** Every reply joined, for asserting on something said mid-flow. */
+    text: () => replies.join('\n'),
+    deferReply: async () => prompt,
+    reply: async content => { push(content); return prompt; },
+    editReply: async content => { push(content); return prompt; },
     options: {
       getRole: (name, required = false) => {
         const value = options[name] ?? null;

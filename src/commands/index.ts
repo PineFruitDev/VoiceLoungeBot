@@ -1,5 +1,6 @@
 import { Command } from '../core/Command.js';
 import { SetupCommand } from './SetupCommand.js';
+import { RemoveCommand } from './RemoveCommand.js';
 import { PingCommand } from './PingCommand.js';
 import { HelpCommand } from './HelpCommand.js';
 
@@ -9,10 +10,12 @@ import { HelpCommand } from './HelpCommand.js';
  */
 export const ALL_COMMANDS: Command[] = [
   new SetupCommand(),
+  new RemoveCommand(),
   new PingCommand(),
   new HelpCommand()
 ];
 
 export { SetupCommand } from './SetupCommand.js';
+export { RemoveCommand } from './RemoveCommand.js';
 export { PingCommand } from './PingCommand.js';
 export { HelpCommand } from './HelpCommand.js';

@@ -33,6 +33,15 @@ interface Ensured<T> {
   previousName?: string;
 }
 
+interface EnsuredCategory extends Ensured<CategoryChannel> {
+  /**
+   * True when this run created the category, false when it adopted one that was
+   * already in the server, and undefined when it came from a stored ID and no
+   * record of its origin was kept. `/remove` treats the three differently.
+   */
+  createdByBot?: boolean;
+}
+
 /**
  * Creates (or repairs) the voice lounge: a category with a waiting room and the
  * two trigger channels, plus the optional moderator role.
@@ -103,7 +112,7 @@ export class SetupCommand extends Command {
     const existing = store.getGuild(guild.id);
 
     // Resolve or create the category first, then the three channels under it.
-    const category = await this.ensureCategory(guild, existing?.categoryId);
+    const category = await this.ensureCategory(guild, existing?.categoryId, existing?.categoryCreatedByBot);
     const waitingRoom = await this.ensureVoiceChannel(
       guild, existing?.waitingRoomId, WAITING_ROOM_NAME, LEGACY_WAITING_ROOM_NAMES, category.channel.id
     );
@@ -135,7 +144,8 @@ export class SetupCommand extends Command {
       categoryId: category.channel.id,
       waitingRoomId: waitingRoom.channel.id,
       newPublicId: newPublic.channel.id,
-      newPrivateId: newPrivate.channel.id
+      newPrivateId: newPrivate.channel.id,
+      categoryCreatedByBot: category.createdByBot
     });
 
     this.logger.info(`execute - Lounge ready in guild ${guild.id}`);
@@ -236,18 +246,31 @@ export class SetupCommand extends Command {
    * Falls back to matching by name when the stored ID is gone, so a server whose
    * config was wiped is repaired rather than given a second category.
    */
-  private async ensureCategory(guild: Guild, existingId?: string): Promise<Ensured<CategoryChannel>> {
+  private async ensureCategory(
+    guild: Guild,
+    existingId?: string,
+    existingCreatedByBot?: boolean
+  ): Promise<EnsuredCategory> {
     const stored = await this.resolveChannel(guild, existingId);
-    const found = stored?.type === ChannelType.GuildCategory
-      ? (stored as CategoryChannel)
-      : this.findByName(guild, ChannelType.GuildCategory, [CATEGORY_NAME, ...LEGACY_CATEGORY_NAMES]) as CategoryChannel | undefined;
 
-    if (!found) {
-      const created = await guild.channels.create({ name: CATEGORY_NAME, type: ChannelType.GuildCategory });
-      return { channel: created, action: 'created' };
+    // From a stored ID: this is the category we already knew about, so whatever
+    // we knew about its origin still holds, including knowing nothing.
+    if (stored?.type === ChannelType.GuildCategory) {
+      return { ...await this.applyName(stored as CategoryChannel, CATEGORY_NAME), createdByBot: existingCreatedByBot };
     }
 
-    return this.applyName(found, CATEGORY_NAME);
+    // Matched by name instead: this category was in the server before we looked,
+    // so it is not ours to delete later.
+    const found = this.findByName(
+      guild, ChannelType.GuildCategory, [CATEGORY_NAME, ...LEGACY_CATEGORY_NAMES]
+    ) as CategoryChannel | undefined;
+
+    if (found) {
+      return { ...await this.applyName(found, CATEGORY_NAME), createdByBot: false };
+    }
+
+    const created = await guild.channels.create({ name: CATEGORY_NAME, type: ChannelType.GuildCategory });
+    return { channel: created, action: 'created', createdByBot: true };
   }
 
   /**
