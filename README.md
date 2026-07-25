@@ -14,7 +14,7 @@ Built on the [TSTemplateBot](https://github.com/PineFruitDev/TSTemplateBot) arch
 - **Owner Controls**: Whoever creates a room gets Manage Channel on it, so they can rename it, set a user limit, and drag people in from the waiting room
 - **Ownership Handoff**: If the owner leaves while others are still talking, control passes to whoever has been in the room longest
 - **Automatic Cleanup**: When the last person leaves a room, the bot deletes it. Empty rooms left behind by a restart are swept on the next boot
-- **Moderator Role**: Point `/set-mod-role` at a role to give it full control over every temporary room, private ones included
+- **Moderator Role**: Point `/setup mod-role:@Role` at a role to give it full control over every temporary room, private ones included
 - **Multi-Server**: Fully per-guild. One instance serves any number of servers, each with its own lounge and its own moderator role
 - **No Privileged Intents**: Runs on the Guilds and Voice States intents, so there is nothing to toggle in the Developer Portal
 - **Production Ready**: Environment validation, contextual logging, and a restart-safe design
@@ -35,7 +35,7 @@ The lounge looks like this:
 | VOICE LOUNGE |
 ├── 👀﹕Drag Me to Private
 ├── ➕﹕🔒 New Private        joining this creates  🔒﹕Private #1
-└── ➕﹕🔓 New Public         joining this creates  🔓﹕Public # 1
+└── ➕﹕🔓 New Public         joining this creates  🔓﹕Public #1
 ```
 
 | What | Name |
@@ -45,7 +45,7 @@ The lounge looks like this:
 | Private trigger | `➕﹕🔒 New Private` |
 | Public trigger | `➕﹕🔓 New Public` |
 | Private room | `🔒﹕Private #1`, `🔒﹕Private #2`, ... |
-| Public room | `🔓﹕Public # 1`, `🔓﹕Public # 2`, ... |
+| Public room | `🔓﹕Public #1`, `🔓﹕Public #2`, ... |
 
 The character between the emoji and the words is **U+FE55 SMALL COLON** (`﹕`), not an ASCII colon. It sits tighter against the emoji in Discord's channel list, and unlike `:` it cannot be mistaken for the start of an emoji shortcode. A test pins the code point, so an editor that normalises it to `:` fails the build instead of quietly renaming every channel in every server on the next `/setup`.
 
@@ -53,7 +53,7 @@ The character between the emoji and the words is **U+FE55 SMALL COLON** (`﹕`),
 
 Rooms are numbered **per type**, and each new room takes the **lowest number that is currently free**:
 
-- Public and private rooms count separately, so `🔓﹕Public # 1` and `🔒﹕Private #1` can be live at the same time.
+- Public and private rooms count separately, so `🔓﹕Public #1` and `🔒﹕Private #1` can be live at the same time.
 - Delete `🔒﹕Private #2` while `#1` and `#3` are still busy and the next private room is `#2` again, not `#4`. The list stays compact instead of climbing forever.
 - Numbers are only ever held by live rooms. When the last room of a type empties, the next one starts at `#1`.
 - If an owner renames their own room, its number goes with the name. The bot skips that number until the room is deleted, then hands it out again.
@@ -74,11 +74,30 @@ Two things worth knowing:
 | Command | Who can run it | What it does |
 |---------|----------------|--------------|
 | `/setup` | Manage Server | Create or repair the voice lounge in this server |
-| `/set-mod-role role:@Role` | Manage Server | Give a role full control over every temporary room, private ones included |
+| `/setup mod-role:@Role` | Manage Server | Same, and give a role full control over every temporary room, private ones included |
+| `/setup clear-mod-role:True` | Manage Server | Same, and take moderator control back off whichever role has it |
 | `/ping` | Anyone | Latency check |
 | `/help` | Anyone | List the commands |
 
 `/setup` is safe to run again. An existing lounge is reused and, if the names have changed, renamed in place, so nothing is duplicated. It recreates only what is actually missing, which is what makes it the fix for a deleted channel or a lost config file.
+
+### The moderator role
+
+A moderator role gets full control of **every** temporary room, private ones included: view, connect, manage, and drag people in. It is optional, and it is set through `/setup` rather than a command of its own, because setting it is part of setting a lounge up and a repair run costs nothing.
+
+```
+/setup mod-role:@Moderators     grant it
+/setup                          leave whatever is set alone
+/setup clear-mod-role:True      take it back
+```
+
+Three things worth knowing:
+
+- **A bare `/setup` never touches the role.** Repairing your channels must not cost you your mod role, so the role only changes when you pass one of the two options.
+- **Rooms that are already open are caught up.** Granting the role writes it onto every live room, and changing or clearing it takes control back off the role that had it, so the previous role is not left in charge of rooms that are still going.
+- **Passing both options is refused** rather than guessed at.
+
+Rooms created after the role is set get it automatically when they are built.
 
 ## Quick Start
 
@@ -158,7 +177,7 @@ Two things cover that:
 When a move fails anyway, the bot logs the cause rather than failing quietly:
 
 ```
-[VoiceLoungeService] moveIntoChannel - Could not move Sky#0001 into "🔓﹕Public # 1". The bot is
+[VoiceLoungeService] moveIntoChannel - Could not move Sky#0001 into "🔓﹕Public #1". The bot is
 missing these server permissions: Move Members. Re-invite it with permissions=288359440,
 or grant them to its role in Server Settings > Roles.
 ```
@@ -225,8 +244,7 @@ src/
 │   └── CommandManager.ts       # Command registry lookups
 ├── commands/
 │   ├── index.ts                # ← Command registry (single source of truth)
-│   ├── SetupCommand.ts         # /setup
-│   ├── SetModRoleCommand.ts    # /set-mod-role
+│   ├── SetupCommand.ts         # /setup, including the moderator role
 │   ├── PingCommand.ts          # /ping
 │   └── HelpCommand.ts          # /help
 ├── config/
@@ -280,7 +298,10 @@ No. The bot uses the Guilds and Voice States intents, neither of which needs a t
 By design. A private room is visible but locked: people can see it exists, but only the owner and the people the owner pulls in can connect. It matches how the owner expects a private room to feel without hiding it entirely.
 
 **Someone deleted one of the lounge channels. How do I fix it?**
-Run `/setup` again. It reuses whatever still exists and recreates only what is missing.
+Run `/setup` again. It reuses whatever still exists and recreates only what is missing. It leaves your moderator role alone unless you pass one of the mod role options.
+
+**What happened to `/set-mod-role`?**
+It is part of `/setup` now, as the optional `mod-role` option. Setting the role was always part of setting a lounge up, and `/setup` is safe to re-run, so it is also how you change the role later. If you upgraded from a version that had `/set-mod-role`, re-register the commands and it disappears from the picker. Your existing moderator role is kept.
 
 **I changed the names in `loungeNames.ts`. Do I have to delete the old channels?**
 No. Restart the bot and run `/setup`. Existing channels are renamed in place, so their IDs, permission overrides, and occupants are all kept, and the existing category is reused rather than a second one being made.

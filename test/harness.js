@@ -183,6 +183,13 @@ class FakeGuild {
     return channel;
   }
 
+  /** Register a role so overwrites for it resolve as a role rather than a member. */
+  addRole(id) {
+    const role = { id, name: id };
+    this.roles.cache.set(id, role);
+    return role;
+  }
+
   /** Register a member and return it. `failMove` forces a specific move failure. */
   addMember(id, displayName) {
     const guild = this;
@@ -316,16 +323,30 @@ export async function createLounge(client, store, guildId) {
   return lounge;
 }
 
-/** A stand-in for the slash-command interaction `/setup` receives. */
-export function createInteraction(guild) {
+/**
+ * A stand-in for the slash-command interaction `/setup` receives. `options` is
+ * keyed by option name, so `{ 'mod-role': role }` is what Discord hands over
+ * when someone types `/setup mod-role:@Moderators`.
+ */
+export function createInteraction(guild, options = {}) {
   const replies = [];
+  const push = content => { replies.push(typeof content === 'string' ? content : content.content); };
+
   return {
     guild,
     replies,
     lastReply: () => replies[replies.length - 1],
     deferReply: async () => {},
-    reply: async content => { replies.push(typeof content === 'string' ? content : content.content); },
-    editReply: async content => { replies.push(typeof content === 'string' ? content : content.content); }
+    reply: async content => push(content),
+    editReply: async content => push(content),
+    options: {
+      getRole: (name, required = false) => {
+        const value = options[name] ?? null;
+        if (!value && required) throw new Error(`Missing required option: ${name}`);
+        return value;
+      },
+      getBoolean: name => options[name] ?? null
+    }
   };
 }
 

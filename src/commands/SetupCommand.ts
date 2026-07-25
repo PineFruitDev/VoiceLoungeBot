@@ -10,7 +10,8 @@ import {
   VoiceChannel
 } from 'discord.js';
 import { Command, CommandHelpInfo } from '../core/Command.js';
-import { GuildConfigStore } from '../services/GuildConfigStore.js';
+import { GuildConfigStore, GuildConfig } from '../services/GuildConfigStore.js';
+import { CONTROL_FLAGS } from '../services/VoiceLoungeService.js';
 import { Logger } from '../services/Logger.js';
 import {
   CATEGORY_NAME,
@@ -34,7 +35,7 @@ interface Ensured<T> {
 
 /**
  * Creates (or repairs) the voice lounge: a category with a waiting room and the
- * two trigger channels.
+ * two trigger channels, plus the optional moderator role.
  *
  * Safe to run more than once, and safe to run after the names in
  * `config/loungeNames.ts` change. An existing lounge is renamed in place rather
@@ -42,20 +43,36 @@ interface Ensured<T> {
  * a channel all survive. It also recovers a lounge whose stored IDs were lost,
  * by matching the channels already in the server against the current names and
  * the names previous versions used.
+ *
+ * The moderator role lives here rather than in a command of its own. Setting it
+ * is part of setting up a lounge, and because a repair run is free, `/setup` is
+ * also the place to change it later.
  */
 export class SetupCommand extends Command {
   private logger = new Logger({ context: 'SetupCommand' });
 
   public readonly data = new SlashCommandBuilder()
     .setName('setup')
-    .setDescription('Create or repair the voice lounge, renaming existing channels to the current convention')
+    .setDescription('Create or repair the voice lounge, and optionally set the moderator role')
+    .addRoleOption(option =>
+      option
+        .setName('mod-role')
+        .setDescription('Role given full control of every temporary room, private ones included')
+        .setRequired(false)
+    )
+    .addBooleanOption(option =>
+      option
+        .setName('clear-mod-role')
+        .setDescription('Remove the current moderator role instead of setting one')
+        .setRequired(false)
+    )
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild);
 
   public readonly helpInfo: CommandHelpInfo = {
     name: 'setup',
-    description: 'Create or repair the voice lounge hub in this server',
-    usage: '/setup',
-    examples: ['/setup'],
+    description: 'Create or repair the voice lounge, and set the moderator role',
+    usage: '/setup [mod-role:@Role] [clear-mod-role:True]',
+    examples: ['/setup', '/setup mod-role:@Moderators', '/setup clear-mod-role:True'],
     category: 'Admin'
   };
 
@@ -70,6 +87,17 @@ export class SetupCommand extends Command {
     }
 
     const guild = interaction.guild!;
+    const requestedModRole = interaction.options.getRole('mod-role');
+    const clearModRole = interaction.options.getBoolean('clear-mod-role') ?? false;
+
+    if (requestedModRole && clearModRole) {
+      await interaction.reply({
+        content: '❌ Pick one: `mod-role` to set a role, or `clear-mod-role` to remove the current one.',
+        ephemeral: true
+      });
+      return;
+    }
+
     await interaction.deferReply({ ephemeral: true });
 
     const existing = store.getGuild(guild.id);
@@ -112,9 +140,7 @@ export class SetupCommand extends Command {
 
     this.logger.info(`execute - Lounge ready in guild ${guild.id}`);
 
-    const modLine = existing?.modRoleId
-      ? `\n🛡️ **Moderator role:** <@&${existing.modRoleId}>`
-      : '\n🛡️ **Moderator role:** not set. Use `/set-mod-role` to grant a role control of every temp channel.';
+    const modLine = await this.applyModRole(guild, store, existing?.modRoleId, requestedModRole?.id, clearModRole);
 
     const renamed = [category, waitingRoom, newPublic, newPrivate].filter(result => result.action === 'renamed');
     const renameLine = renamed.length > 0
@@ -131,6 +157,77 @@ export class SetupCommand extends Command {
       modLine +
       renameLine
     );
+  }
+
+  /**
+   * Settle the moderator role and return the line describing where it landed.
+   *
+   * Passing neither option leaves the role exactly as it was, which is what
+   * makes a bare `/setup` safe to run as a repair: fixing the channels must
+   * never cost a server its mod role.
+   */
+  private async applyModRole(
+    guild: Guild,
+    store: GuildConfigStore,
+    previousRoleId: string | undefined,
+    requestedRoleId: string | undefined,
+    clear: boolean
+  ): Promise<string> {
+    const nextRoleId = requestedRoleId ?? (clear ? undefined : previousRoleId);
+
+    if (nextRoleId === previousRoleId) {
+      return nextRoleId
+        ? `\n🛡️ **Moderator role:** <@&${nextRoleId}> (unchanged). Run \`/setup mod-role:@Role\` to change it.`
+        : '\n🛡️ **Moderator role:** not set. Run `/setup mod-role:@Role` to grant a role control of every temp room.';
+    }
+
+    await store.setModRole(guild.id, nextRoleId);
+
+    const updated = await this.rewriteModOverwrites(guild, store.getGuild(guild.id), previousRoleId, nextRoleId);
+    this.logger.info(`execute - Mod role in guild ${guild.id} is now ${nextRoleId ?? 'unset'}, updated ${updated} open room(s)`);
+
+    if (!nextRoleId) {
+      return `\n🛡️ **Moderator role:** cleared. Control was removed from **${updated}** open room(s).`;
+    }
+
+    return (
+      `\n🛡️ **Moderator role:** <@&${nextRoleId}>\n` +
+      `They can now see, join, and manage every temporary room, including private ones. ` +
+      `Applied to **${updated}** room(s) currently open; new rooms get it automatically.`
+    );
+  }
+
+  /**
+   * Move moderator control across the rooms that are already open. A role that
+   * is no longer the mod role has its overwrite removed, or changing the role
+   * would leave the old one in charge of every room that is currently live.
+   */
+  private async rewriteModOverwrites(
+    guild: Guild,
+    config: GuildConfig | undefined,
+    previousRoleId: string | undefined,
+    nextRoleId: string | undefined
+  ): Promise<number> {
+    let updated = 0;
+
+    for (const channelId of Object.keys(config?.tempChannels ?? {})) {
+      const channel = guild.channels.cache.get(channelId);
+      if (!channel || channel.type !== ChannelType.GuildVoice) continue;
+
+      try {
+        if (previousRoleId) {
+          await (channel as VoiceChannel).permissionOverwrites.delete(previousRoleId, 'No longer the lounge moderator role');
+        }
+        if (nextRoleId) {
+          await (channel as VoiceChannel).permissionOverwrites.edit(nextRoleId, CONTROL_FLAGS);
+        }
+        updated++;
+      } catch (error) {
+        this.logger.warn(`rewriteModOverwrites - Failed to update overwrites on ${channelId}:`, error);
+      }
+    }
+
+    return updated;
   }
 
   /**
