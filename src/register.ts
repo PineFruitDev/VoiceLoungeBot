@@ -1,8 +1,7 @@
 import dotenv from 'dotenv';
-import { REST, Routes } from 'discord.js';
 import { Logger } from './services/Logger.js';
 import { Environment } from './services/Environment.js';
-import { CommandManager } from './core/CommandManager.js';
+import { CommandRegistrar } from './services/CommandRegistrar.js';
 import { ALL_COMMANDS } from './commands/index.js';
 
 dotenv.config();
@@ -10,33 +9,32 @@ dotenv.config();
 const logger = new Logger({ context: 'Register' });
 
 /**
- * Register slash commands globally with Discord.
+ * Register slash commands globally with Discord, by hand.
+ *
+ * The bot does this for itself on boot, so this is the escape hatch: it forces
+ * the call through even when the stored fingerprint says nothing has changed,
+ * which is what you want if commands were edited outside this bot or a previous
+ * registration went missing. Unlike the boot path it exits non-zero on failure,
+ * because someone is watching this one.
  */
 async function registerCommands() {
   try {
     Environment.validate();
     const config = Environment.getConfig();
 
-    const commandManager = new CommandManager(ALL_COMMANDS);
-    const commandData = commandManager.getRegistrationData();
+    logger.info(`registerCommands - Forcing registration of ${ALL_COMMANDS.length} commands`);
 
-    logger.info(`registerCommands - Preparing to register ${commandData.length} commands`);
+    const result = await new CommandRegistrar(ALL_COMMANDS, {
+      clientId: config.discordClientId,
+      dataDir: config.dataDir,
+      token: config.discordToken
+    }).register({ force: true });
 
-    const rest = new REST().setToken(config.discordToken);
-
-    logger.info(`registerCommands - Started refreshing ${commandData.length} application (/) commands`);
-
-    const data = await rest.put(
-      Routes.applicationCommands(config.discordClientId),
-      { body: commandData }
-    ) as any[];
-
-    logger.info(`registerCommands - Successfully reloaded ${data.length} application (/) commands`);
-
-    for (const command of ALL_COMMANDS) {
-      const helpInfo = command.getHelpInfo();
-      logger.info(`registerCommands - Registered: /${command.getName()} [${helpInfo.category}] - ${command.getDescription()}`);
+    if (result.outcome === 'failed') {
+      process.exit(1);
     }
+
+    logger.info(`registerCommands - Done, ${result.count} command(s) registered`);
 
   } catch (error) {
     logger.error('registerCommands - Error registering commands:', error);
