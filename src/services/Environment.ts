@@ -21,8 +21,12 @@ export class Environment {
   private static readonly OPTIONAL_VARS = {
     NODE_ENV: 'production',
     DEVELOPER_IDS: '',
-    DATA_DIR: 'data'
+    DATA_DIR: 'data',
+    REGISTER_ON_BOOT: 'true'
   } as const;
+
+  /** Values that read as "no" for a boolean environment variable. */
+  private static readonly FALSEY = ['false', '0', 'no', 'off'];
 
   /**
    * Validate all required environment variables
@@ -110,6 +114,7 @@ export class Environment {
     this.logger.info(`validate - Environment: ${process.env.NODE_ENV}`);
     this.logger.info(`validate - Discord Client ID: ${process.env.DISCORD_CLIENT_ID}`);
     this.logger.info(`validate - Data directory: ${process.env.DATA_DIR}`);
+    this.logger.info(`validate - Register commands on boot: ${this.isTruthy(process.env.REGISTER_ON_BOOT, true)}`);
     this.logger.info(`validate - Discord Token: ${this.maskToken(process.env.DISCORD_TOKEN!)}`);
 
     if (process.env.DEVELOPER_IDS) {
@@ -136,8 +141,15 @@ export class Environment {
       nodeEnv: process.env.NODE_ENV!,
       dataDir: process.env.DATA_DIR!,
       developerIds: process.env.DEVELOPER_IDS?.split(',').map(id => id.trim()).filter(Boolean) || [],
+      registerOnBoot: this.isTruthy(process.env.REGISTER_ON_BOOT, true),
       isDevelopment: process.env.NODE_ENV === 'development',
       isProduction: process.env.NODE_ENV === 'production'
     };
+  }
+
+  /** Read a boolean environment variable, defaulting when it is unset. */
+  private static isTruthy(value: string | undefined, fallback: boolean): boolean {
+    if (value === undefined || value.trim() === '') return fallback;
+    return !this.FALSEY.includes(value.trim().toLowerCase());
   }
 }

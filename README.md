@@ -175,14 +175,53 @@ DISCORD_TOKEN=your_bot_token_here
 DISCORD_CLIENT_ID=your_bot_client_id_here
 ```
 
-### 4. Register commands and run
+### 4. Run it
 
 ```bash
-npm run register   # register slash commands with Discord (run once, or after changing commands)
-npm start          # start the bot
+npm start
 ```
 
+That is the whole thing. The bot registers its slash commands with Discord as it comes online, so there is no separate registration step to remember.
+
 Then run `/setup` in your server and the lounge appears.
+
+## Command registration
+
+The bot registers its own commands on boot. Adding, removing, or editing a command means restarting the bot, and nothing else.
+
+### It only calls Discord when something changed
+
+Registering on every boot would mean a redundant round trip on every restart forever, and hosts that restart on a schedule do a lot of restarts. So the command payload is fingerprinted with a SHA-256 and the fingerprint is stored in `DATA_DIR/commands.json`. A boot whose commands match what was last registered logs a line and makes no API call at all.
+
+The fingerprint covers the exact payload plus the client ID, so:
+
+- Editing a name, description, or option re-registers.
+- Adding or removing a command re-registers.
+- Pointing the bot at a different application re-registers, because what that application already has is unknown.
+- A discord.js upgrade that emits the same fields in a different order does **not** re-register. Keys are sorted before hashing.
+- A registration that failed is not recorded, so the next restart tries again.
+
+On Discord's limits: the documented cap is **200 application command creates per day, per guild**, and the bulk overwrite this uses only counts commands whose names do not already exist. Re-sending an unchanged set was never going to exhaust that quota, so the fingerprint is about not making a pointless call and about leaving headroom for anyone genuinely iterating on command names. Global commands also have read-repair, so a client holding a stale command gets it refreshed rather than silently failing.
+
+### Failure is not fatal
+
+If registration fails (Discord down, a 429, a bad token for the REST route), the bot logs the reason and keeps running. Every command that was already registered still works, since registration state lives with Discord, not in the process. It tries again on the next restart.
+
+This is deliberate: registration happens unattended on a restart nobody is watching, and a bot that cannot reach the command API is still a working bot.
+
+### Turning it off
+
+```env
+REGISTER_ON_BOOT=false
+```
+
+The boot path then skips registration entirely and you register by hand:
+
+```bash
+npm run register
+```
+
+`npm run register` also works with registration on. It **forces** the call through, ignoring the stored fingerprint, which is what you want if commands were changed outside this bot or a registration went missing.
 
 ## Troubleshooting
 
@@ -238,20 +277,19 @@ Panel settings:
 - **Node version:** 18 or newer. Built and tested on Node 20 and 22.
 - **Environment variables:** set `DISCORD_TOKEN` and `DISCORD_CLIENT_ID`. You can either add them on the panel's Startup tab or drop a `.env` file in the container root (`/home/container/.env`); the bot reads `.env` from its working directory, which is the container root. Panel variables win if you set the same key in both places.
 
-That is everything for normal operation: on each boot the panel pulls the latest code, `npm install --production` rebuilds `dist/`, and the launcher starts the bot.
+That is everything, for updates as well as first setup: on each boot the panel pulls the latest code, `npm install --production` rebuilds `dist/`, the launcher starts the bot, and the bot registers any command changes itself. Shipping a change is a restart.
 
 ### Registering the slash commands
 
-The locked startup only runs the bot, not the one-off command registration. To register (or after you change a command), point the panel at the register entry for a single boot, then switch back:
+Nothing to do. The bot registers its own commands when it comes online, so a restart is the whole deployment step: the panel pulls the latest code, the build runs, and any command that was added, removed, or edited is pushed to Discord on the way up.
 
-1. Set `STARTUP_FILE=dist/register.js` and restart. It builds, registers the commands with Discord, and exits.
-2. Set `STARTUP_FILE=index.js` again and restart for normal operation.
+There is no `STARTUP_FILE` swapping. Leave it on `index.js` permanently.
 
-Registration needs the same `DISCORD_TOKEN` and `DISCORD_CLIENT_ID`. If your host lets you run a console command instead, `npm run register` does the same thing.
+See [Command registration](#command-registration) for what it does to avoid pointless API calls and how to turn it off.
 
 ### Where config is stored
 
-Per-server config lives in `data/guilds.json`. `DATA_DIR` defaults to the relative path `data`, so it resolves to `/home/container/data` and is created on first write with no extra setup; there is no absolute path to configure and the container does not need a dedicated data-directory variable. A normal `git pull` on boot leaves it alone (it is gitignored).
+Per-server config lives in `data/guilds.json`, and the command registration record in `data/commands.json`. `DATA_DIR` defaults to the relative path `data`, so it resolves to `/home/container/data` and is created on first write with no extra setup; there is no absolute path to configure and the container does not need a dedicated data-directory variable. A normal `git pull` on boot leaves both alone (they are gitignored).
 
 If your host's boot sequence runs `git clean -fdx` or otherwise wipes untracked files, that file is deleted and the bot forgets its lounges. If a lounge disappears after a reboot, either move the startup off a destructive clean or just run `/setup` again; it repairs in place without creating duplicate channels. To keep config safe no matter what, point `DATA_DIR` at a persistent path outside the repo directory.
 
@@ -274,13 +312,15 @@ src/
 ├── services/
 │   ├── VoiceLoungeService.ts   # ← Voice-state engine: create, move, transfer, delete, sweep
 │   ├── GuildConfigStore.ts     # Per-server JSON persistence
+│   ├── CommandRegistrar.ts     # Registers commands on boot, skipping an unchanged set
 │   ├── Environment.ts          # Config validation
 │   └── Logger.ts               # Contextual logging
 ├── index.ts                    # Entry point
-└── register.ts                 # Slash command registration
+└── register.ts                 # Manual force-register entry point
 
 test/
 ├── harness.js                  # Fake guild, members, and Discord's move permission rules
+├── command-registration.test.js # Registering on boot: the hash skip and non-fatal failure
 ├── voice-lounge.test.js        # Join to create, move, teardown, and ownership handoff
 ├── naming.test.js              # Channel names, room numbering, and the /setup rename
 └── remove.test.js              # /remove: confirmation, teardown, and what it refuses to touch
@@ -291,7 +331,7 @@ The tests run on `node --test` with no test framework to install. The harness mo
 ## Scripts
 
 - `npm run build` compiles TypeScript to `dist/`
-- `npm run register` builds, then registers slash commands with Discord
+- `npm run register` builds, then force-registers slash commands with Discord (the bot does this itself on boot, so this is the manual escape hatch)
 - `npm start` runs the compiled bot
 - `npm run dev` builds and runs in one step
 - `npm run deploy` builds, registers, then starts
@@ -307,7 +347,8 @@ The tests run on `node --test` with no test framework to install. The harness mo
 | `DISCORD_CLIENT_ID` | yes | Application (client) ID |
 | `DEVELOPER_IDS` | no | Comma-separated user IDs for developer-only commands |
 | `NODE_ENV` | no | `development` enables debug logging (defaults to `production`) |
-| `DATA_DIR` | no | Directory for the persisted config file (defaults to `data`) |
+| `DATA_DIR` | no | Directory for the persisted config files (defaults to `data`) |
+| `REGISTER_ON_BOOT` | no | Register slash commands when the bot comes online (defaults to `true`; set `false` to register by hand) |
 
 ## FAQ
 
@@ -322,6 +363,12 @@ By design. A private room is visible but locked: people can see it exists, but o
 
 **Someone deleted one of the lounge channels. How do I fix it?**
 Run `/setup` again. It reuses whatever still exists and recreates only what is missing. It leaves your moderator role alone unless you pass one of the mod role options.
+
+**Do I need to register the slash commands after an update?**
+No. The bot registers them itself when it comes online, so restarting is the whole step. If a command set is unchanged it makes no API call at all. See [Command registration](#command-registration).
+
+**A command I added is not showing up in Discord.**
+Check the boot log. If it says the commands were unchanged, the payload really is identical, so look at whether the command is in `src/commands/index.ts`. If registration failed, the log says why and the bot keeps running; restart, or run `npm run register` to force it through. Discord clients can also cache the old list briefly, so try reloading yours.
 
 **How do I get rid of the lounge entirely?**
 `/remove`, then confirm. It deletes the rooms, the hub channels, the category if the bot built it, and this server's config. Anything the bot did not create is left where it is.
