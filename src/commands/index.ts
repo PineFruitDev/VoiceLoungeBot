@@ -1,6 +1,5 @@
 import { Command } from '../core/Command.js';
 import { SetupCommand } from './SetupCommand.js';
-import { SetModRoleCommand } from './SetModRoleCommand.js';
 import { PingCommand } from './PingCommand.js';
 import { HelpCommand } from './HelpCommand.js';
 
@@ -10,12 +9,10 @@ import { HelpCommand } from './HelpCommand.js';
  */
 export const ALL_COMMANDS: Command[] = [
   new SetupCommand(),
-  new SetModRoleCommand(),
   new PingCommand(),
   new HelpCommand()
 ];
 
 export { SetupCommand } from './SetupCommand.js';
-export { SetModRoleCommand } from './SetModRoleCommand.js';
 export { PingCommand } from './PingCommand.js';
 export { HelpCommand } from './HelpCommand.js';
