@@ -76,6 +76,7 @@ Two things worth knowing:
 | `/setup` | Manage Server | Create or repair the voice lounge in this server |
 | `/setup mod-role:@Role` | Manage Server | Same, and give a role full control over every temporary room, private ones included |
 | `/setup clear-mod-role:True` | Manage Server | Same, and take moderator control back off whichever role has it |
+| `/remove` | Manage Server | Delete the lounge from this server and clear its config, after you confirm |
 | `/ping` | Anyone | Latency check |
 | `/help` | Anyone | List the commands |
 
@@ -98,6 +99,26 @@ Three things worth knowing:
 - **Passing both options is refused** rather than guessed at.
 
 Rooms created after the role is set get it automatically when they are built.
+
+### Removing the lounge
+
+`/remove` is the counterpart to `/setup`: it takes the lounge back out and returns the server to where it was before.
+
+It puts up a confirmation first, naming exactly what will go and how many people are connected to it, with a button to go ahead and one to cancel. Nothing is deleted until you press the red one, and the prompt expires by itself after a minute.
+
+What it deletes:
+
+- Every temporary room the bot is tracking, whoever is in them.
+- The waiting room and both trigger channels.
+- The lounge category, but only if the bot created it and nothing else is left inside it.
+- This server's saved config, so the bot forgets the lounge entirely.
+
+What it will not touch:
+
+- **Any channel the bot did not record.** Deletion goes strictly by the IDs stored for the server. A channel that merely sits in the lounge category, or merely looks like a lounge channel, is left alone, and it keeps the category alive with it.
+- **A category the bot adopted** rather than created. If `/setup` found an existing category and moved into it, that category is yours, and `/remove` says so instead of deleting it.
+
+Channels that were already deleted by hand are counted and skipped rather than treated as errors, and anything the bot genuinely cannot delete is named in the summary so you can clear it yourself. Either way the config is cleared, so `/setup` afterwards builds a fresh lounge with room numbering starting over at 1.
 
 ## Quick Start
 
@@ -245,6 +266,7 @@ src/
 ├── commands/
 │   ├── index.ts                # ← Command registry (single source of truth)
 │   ├── SetupCommand.ts         # /setup, including the moderator role
+│   ├── RemoveCommand.ts        # /remove, the confirmed teardown
 │   ├── PingCommand.ts          # /ping
 │   └── HelpCommand.ts          # /help
 ├── config/
@@ -260,7 +282,8 @@ src/
 test/
 ├── harness.js                  # Fake guild, members, and Discord's move permission rules
 ├── voice-lounge.test.js        # Join to create, move, teardown, and ownership handoff
-└── naming.test.js              # Channel names, room numbering, and the /setup rename
+├── naming.test.js              # Channel names, room numbering, and the /setup rename
+└── remove.test.js              # /remove: confirmation, teardown, and what it refuses to touch
 ```
 
 The tests run on `node --test` with no test framework to install. The harness models how Discord resolves a permission on a channel (server-wide grant, then the `@everyone` overwrite, then the member overwrite), so a move that Discord would reject fails in the tests too.
@@ -299,6 +322,12 @@ By design. A private room is visible but locked: people can see it exists, but o
 
 **Someone deleted one of the lounge channels. How do I fix it?**
 Run `/setup` again. It reuses whatever still exists and recreates only what is missing. It leaves your moderator role alone unless you pass one of the mod role options.
+
+**How do I get rid of the lounge entirely?**
+`/remove`, then confirm. It deletes the rooms, the hub channels, the category if the bot built it, and this server's config. Anything the bot did not create is left where it is.
+
+**I ran `/remove` by mistake. Can I undo it?**
+No, the channels are gone. Run `/setup` and you get a fresh lounge in seconds, though room numbering starts over and the previous rooms are not coming back. This is why `/remove` asks first and tells you how many people are connected.
 
 **What happened to `/set-mod-role`?**
 It is part of `/setup` now, as the optional `mod-role` option. Setting the role was always part of setting a lounge up, and `/setup` is safe to re-run, so it is also how you change the role later. If you upgraded from a version that had `/set-mod-role`, re-register the commands and it disappears from the picker. Your existing moderator role is kept.
