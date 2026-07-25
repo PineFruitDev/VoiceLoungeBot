@@ -15,40 +15,48 @@ import { GuildConfigStore, GuildConfig } from './GuildConfigStore.js';
 import { tempRoomName, parseRoomIndex } from '../config/loungeNames.js';
 
 /**
- * Permissions granted to a channel owner (and the mod role).
+ * What a room owner (and the mod role) gets the moment the room is created.
  *
  * ManageChannels is what lets an owner rename their room, set a user limit, and
- * change the bitrate. ManageRoles is what Discord shows as **Manage
- * Permissions**, and without it the Permissions tab of Edit Channel stays
- * locked: the owner of a private room could drag people in from the waiting
- * room but could not grant anyone access directly, which does not match what
- * owning a room is supposed to feel like.
+ * change the bitrate. ManageRoles is deliberately absent, and its absence here
+ * is the whole point of this constant.
  *
- * The bot can only hand out permissions it holds itself, and its invite
- * integer covers every one of these. A test pins that both ways round.
+ * Discord validates the two ways of writing an overwrite differently. Create
+ * Guild Channel says "Setting MANAGE_ROLES permission in channels is only
+ * possible for guild administrators", and that is a separate bar from the usual
+ * "only permissions the bot holds itself": a bot invited with Manage Roles
+ * still does not clear it. Worse, the rejection takes down the entire request
+ * with 50013, so one optional permission in one overwrite meant no room at all.
+ *
+ * So the room is created with this set, which any properly invited bot can
+ * write, and Manage Permissions is added on the next call. See
+ * grantManagePermissions for why that second call is allowed to succeed.
  */
-const CONTROL_PERMS = [
-  PermissionFlagsBits.ViewChannel,
-  PermissionFlagsBits.Connect,
-  PermissionFlagsBits.Speak,
-  PermissionFlagsBits.ManageChannels,
-  PermissionFlagsBits.ManageRoles,
-  PermissionFlagsBits.MoveMembers
-];
-
-/**
- * The same control set expressed as a flag object for permissionOverwrites.edit.
- * Exported because `/setup` writes it onto already-open rooms when the mod role
- * changes, and the two have to grant the same thing.
- */
-export const CONTROL_FLAGS = {
+export const BASE_CONTROL_FLAGS = {
   ViewChannel: true,
   Connect: true,
   Speak: true,
   ManageChannels: true,
-  ManageRoles: true,
   MoveMembers: true
 } as const;
+
+/**
+ * The full control set, which is the base plus the permission Discord's client
+ * calls **Manage Permissions**. Without it the Permissions tab of Edit Channel
+ * stays locked: the owner of a private room can drag people in from the waiting
+ * room but cannot grant anyone access directly.
+ *
+ * Exported because `/setup` writes it onto already-open rooms when the mod role
+ * changes, and every path that hands out control has to hand out the same thing.
+ */
+export const CONTROL_FLAGS = {
+  ...BASE_CONTROL_FLAGS,
+  ManageRoles: true
+} as const;
+
+/** The base set as flag bits, for the overwrites passed to channel creation. */
+const BASE_CONTROL_PERMS = Object.keys(BASE_CONTROL_FLAGS)
+  .map(name => PermissionFlagsBits[name as keyof typeof PermissionFlagsBits]);
 
 /**
  * What the bot needs on a room it created, granted to itself explicitly.
@@ -90,6 +98,54 @@ export const REQUIRED_PERMISSION_INTEGER = INVITE_PERMS
 const MOVE_PERMS = INVITE_PERMS.filter(({ name }) => name !== 'Speak');
 
 /**
+ * Whether the bot can hand Manage Permissions to a room owner in this server,
+ * and if not, what an admin has to change to fix it.
+ *
+ * Exported so `/setup` can say the same thing the logs say. An operator who
+ * runs `/setup` should not have to go reading logs to find out that owners are
+ * getting less than the README promises them.
+ */
+export function diagnoseManagePermissions(guild: Guild, categoryId?: string): { ok: boolean; reason: string } {
+  const me = guild.members.me;
+  if (!me) {
+    return { ok: false, reason: 'The bot could not read its own member record in this server.' };
+  }
+
+  // Administrator bypasses channel overwrites entirely, so nothing below it can
+  // be the problem.
+  if (me.permissions.has(PermissionFlagsBits.Administrator)) {
+    return { ok: true, reason: 'The bot is an administrator in this server.' };
+  }
+
+  if (!me.permissions.has(PermissionFlagsBits.ManageRoles)) {
+    return {
+      ok: false,
+      reason:
+        'The bot role does not have Manage Permissions. Grant it in Server Settings > Roles > the bot role, ' +
+        `or re-invite the bot with permissions=${REQUIRED_PERMISSION_INTEGER}.`
+    };
+  }
+
+  // Held server wide but taken away again on the lounge category. Overwrites
+  // are applied on top of the role's permissions, so a deny here wins, and the
+  // rooms inherit it because they live under this category.
+  const category = categoryId ? guild.channels.cache.get(categoryId) : undefined;
+  if (category && 'permissionsFor' in category) {
+    const here = category.permissionsFor(me);
+    if (here && !here.has(PermissionFlagsBits.ManageRoles)) {
+      return {
+        ok: false,
+        reason:
+          `The bot role has Manage Permissions server wide, but a permission override on the ` +
+          `"${category.name}" category takes it away again. Clear that override on the category.`
+      };
+    }
+  }
+
+  return { ok: true, reason: 'The bot holds Manage Permissions in this server and on the lounge category.' };
+}
+
+/**
  * Everything the invite integer grants, as one bitfield. A bot can only hand
  * out permissions it holds, so this is the ceiling on every overwrite the bot
  * writes, and a test checks nothing exceeds it.
@@ -112,6 +168,9 @@ export class VoiceLoungeService {
    * store's lowest free number and both rooms would come out with the same one.
    */
   private reservedIndexes = new Map<string, Set<number>>();
+
+  /** Guilds already told that owners are not getting Manage Permissions. */
+  private warnedManagePermissions = new Set<string>();
 
   constructor(
     private client: Client,
@@ -199,12 +258,93 @@ export class VoiceLoungeService {
     this.releaseIndex(guild.id, isPrivate, index);
 
     const moved = await this.moveIntoChannel(member, channel);
-    if (moved) {
-      this.logger.info(`createTempChannel - Created ${isPrivate ? 'private' : 'public'} channel "${channel.name}" for ${member.user.tag} and moved them in`);
+    if (!moved) {
+      await this.discardUnusedChannel(guild, channel);
       return;
     }
 
-    await this.discardUnusedChannel(guild, channel);
+    // After the move, not before: the owner should not wait on an optional
+    // permission to land in their room, and a room nobody made it into is about
+    // to be deleted anyway.
+    await this.grantManagePermissions(guild, config, channel, member.id);
+
+    this.logger.info(`createTempChannel - Created ${isPrivate ? 'private' : 'public'} channel "${channel.name}" for ${member.user.tag} and moved them in`);
+  }
+
+  /**
+   * Add Manage Permissions to the owner's overwrite, and the mod role's, once
+   * the room exists.
+   *
+   * This is the second half of building a room, and it is a separate call
+   * because Discord judges it by a different rule. Creating a channel with a
+   * MANAGE_ROLES overwrite is administrator only, but editing an overwrite
+   * afterwards only asks that the bot hold the permission "in the guild or
+   * parent channel", which a bot invited with the README's integer does. So the
+   * split is not defensive tidying: it is the only order that lets a normally
+   * invited bot hand this out at all.
+   *
+   * Failure is never fatal. The room is already made and the owner is already
+   * in it, holding rename, user limit, bitrate, and the ability to drag people
+   * in from the waiting room. Only the Permissions tab stays locked.
+   */
+  private async grantManagePermissions(
+    guild: Guild,
+    config: GuildConfig,
+    channel: VoiceChannel,
+    ownerId: string
+  ): Promise<boolean> {
+    const targets = [ownerId];
+    if (config.modRoleId && guild.roles.cache.has(config.modRoleId)) {
+      targets.push(config.modRoleId);
+    }
+
+    for (const id of targets) {
+      try {
+        // The whole control set rather than the single missing flag. discord.js
+        // merges an edit into the existing overwrite, so both ways would land
+        // the same bits, but naming the full set means this call states what an
+        // owner gets instead of depending on what the create call wrote.
+        await channel.permissionOverwrites.edit(id, CONTROL_FLAGS);
+      } catch (error) {
+        this.warnManagePermissionsDenied(guild, config, channel, error);
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Say once per server that owners are not getting Manage Permissions.
+   *
+   * Once, because this fires on every room creation in a server that is missing
+   * the permission, and a line per join would bury the rest of the log. The
+   * counter resets on restart, which is also when a permission change would
+   * have been picked up, so the message comes back if it is still true.
+   */
+  private warnManagePermissionsDenied(
+    guild: Guild,
+    config: GuildConfig,
+    channel: VoiceChannel,
+    error: unknown
+  ): void {
+    if (this.warnedManagePermissions.has(guild.id)) return;
+    this.warnedManagePermissions.add(guild.id);
+
+    const diagnosis = diagnoseManagePermissions(guild, config.categoryId);
+    const cause = diagnosis.ok
+      ? 'The bot appears to hold Manage Permissions here, so Discord refused for another reason. ' +
+        'Check for a permission override on the lounge category, and that the bot role sits high enough ' +
+        'in Server Settings > Roles.'
+      : diagnosis.reason;
+
+    this.logger.warn(
+      `grantManagePermissions - Could not give the owner of "${channel.name}" Manage Permissions (MANAGE_ROLES) ` +
+      `in guild ${guild.id}. Rooms are still being created and owners can still rename them, set a user limit, ` +
+      `and drag people in, but the Permissions tab stays locked so they cannot grant anyone access directly. ` +
+      `${cause} This is logged once per server per restart.`,
+      error
+    );
   }
 
   /**
@@ -365,11 +505,20 @@ export class VoiceLoungeService {
       this.logger.warn(`transferOwnership - Failed to clear old owner overwrite on ${channel.id}:`, error);
     }
 
+    // Same two-tier grant as creation. A server that will not let the bot hand
+    // out Manage Permissions must still get a working handoff, or the room is
+    // left with nobody in charge of it for as long as it stays open.
+    const config = this.store.getGuild(guildId);
     try {
       await channel.permissionOverwrites.edit(nextOwnerId, CONTROL_FLAGS);
     } catch (error) {
-      this.logger.warn(`transferOwnership - Failed to grant new owner overwrite on ${channel.id}:`, error);
-      return;
+      try {
+        await channel.permissionOverwrites.edit(nextOwnerId, BASE_CONTROL_FLAGS);
+        if (config) this.warnManagePermissionsDenied(channel.guild, config, channel, error);
+      } catch (fallbackError) {
+        this.logger.warn(`transferOwnership - Failed to grant new owner overwrite on ${channel.id}:`, fallbackError);
+        return;
+      }
     }
 
     await this.store.setTempOwner(guildId, channel.id, nextOwnerId);
@@ -379,7 +528,9 @@ export class VoiceLoungeService {
   /**
    * Build the permission overwrites for a temp channel.
    * - @everyone can view and join public channels; view but not join private ones.
-   * - The owner gets full control plus the ability to drag members in.
+   * - The owner gets control of the room plus the ability to drag members in.
+   *   Manage Permissions is not in here and cannot be: see BASE_CONTROL_FLAGS.
+   *   grantManagePermissions adds it once the channel exists.
    * - The mod role (if set) gets the same control over every temp channel.
    * - The bot keeps Connect and Move Members on the room regardless, so the
    *   @everyone Connect deny on a private room does not lock it out of the room
@@ -408,12 +559,12 @@ export class VoiceLoungeService {
       {
         id: ownerId,
         type: OverwriteType.Member,
-        allow: CONTROL_PERMS
+        allow: BASE_CONTROL_PERMS
       }
     ];
 
     if (modRoleId && guild.roles.cache.has(modRoleId)) {
-      overwrites.push({ id: modRoleId, type: OverwriteType.Role, allow: CONTROL_PERMS });
+      overwrites.push({ id: modRoleId, type: OverwriteType.Role, allow: BASE_CONTROL_PERMS });
     }
 
     // Skipped when the bot is somehow the owner: that overwrite already covers
