@@ -3,6 +3,7 @@ import {
   Events,
   VoiceState,
   Guild,
+  GuildMember,
   ChannelType,
   PermissionFlagsBits,
   OverwriteType,
@@ -34,6 +35,45 @@ const CONTROL_FLAGS = {
 } as const;
 
 /**
+ * What the bot needs on a room it created, granted to itself explicitly.
+ *
+ * Discord will only let you move a member into a voice channel if you can see
+ * it, hold Move Members on it, and could Connect to it yourself. A private room
+ * denies Connect to @everyone, and the bot is a member of @everyone like anyone
+ * else, so without this overwrite the bot locks itself out of the room it just
+ * made and the move fails with 50013. ManageChannels keeps the later teardown
+ * working for the same reason.
+ */
+const BOT_PERMS = [
+  PermissionFlagsBits.ViewChannel,
+  PermissionFlagsBits.Connect,
+  PermissionFlagsBits.MoveMembers,
+  PermissionFlagsBits.ManageChannels
+];
+
+/**
+ * The permissions the bot is invited with, as documented in the README. The
+ * invite integer is derived from this list rather than written down twice, so
+ * the number the code tells operators to use cannot drift from what it needs.
+ */
+const INVITE_PERMS = [
+  { flag: PermissionFlagsBits.ViewChannel, name: 'View Channels' },
+  { flag: PermissionFlagsBits.ManageChannels, name: 'Manage Channels' },
+  { flag: PermissionFlagsBits.ManageRoles, name: 'Manage Roles' },
+  { flag: PermissionFlagsBits.MoveMembers, name: 'Move Members' },
+  { flag: PermissionFlagsBits.Connect, name: 'Connect' },
+  { flag: PermissionFlagsBits.Speak, name: 'Speak' }
+];
+
+/** The README's invite permissions integer, derived from the list above. */
+export const REQUIRED_PERMISSION_INTEGER = INVITE_PERMS
+  .reduce((total, { flag }) => total | flag, 0n)
+  .toString();
+
+/** The subset of the above that a failed move is worth checking against. */
+const MOVE_PERMS = INVITE_PERMS.filter(({ name }) => name !== 'Speak');
+
+/**
  * The engine behind the voice lounge: watches voice-state changes, spins up a
  * temporary channel when a member joins a hub trigger, hands the creator control
  * of their channel, transfers ownership if the owner leaves while others remain,
@@ -46,11 +86,13 @@ export class VoiceLoungeService {
     private client: Client,
     private store: GuildConfigStore
   ) {
-    this.client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+    // The returned promise is ignored by the event emitter, but handing it back
+    // lets tests await a whole voice-state cascade instead of racing it.
+    this.client.on(Events.VoiceStateUpdate, (oldState, newState) =>
       this.handleVoiceStateUpdate(oldState, newState).catch(error => {
         this.logger.error('handleVoiceStateUpdate - Unhandled error:', error);
-      });
-    });
+      })
+    );
   }
 
   /**
@@ -97,6 +139,7 @@ export class VoiceLoungeService {
     if (!member) return;
 
     const name = `${isPrivate ? '🔒' : '🔊'} ${member.displayName}`;
+    const botId = guild.members.me?.id ?? this.client.user?.id;
 
     let channel: VoiceChannel;
     try {
@@ -104,7 +147,7 @@ export class VoiceLoungeService {
         name: name.slice(0, 100),
         type: ChannelType.GuildVoice,
         parent: config.categoryId,
-        permissionOverwrites: this.buildOverwrites(guild, member.id, isPrivate, config.modRoleId)
+        permissionOverwrites: this.buildOverwrites(guild, member.id, isPrivate, config.modRoleId, botId)
       });
     } catch (error) {
       this.logger.error(`createTempChannel - Failed to create channel for ${member.user.tag}:`, error);
@@ -119,14 +162,74 @@ export class VoiceLoungeService {
       members: { [member.id]: Date.now() }
     });
 
-    // Move the creator into their channel. If they already vanished, tear it down.
-    try {
-      await member.voice.setChannel(channel);
-      this.logger.info(`createTempChannel - Created ${isPrivate ? 'private' : 'public'} channel "${channel.name}" for ${member.user.tag}`);
-    } catch (error) {
-      this.logger.warn(`createTempChannel - Could not move ${member.user.tag} into new channel, removing it:`, error);
-      await this.deleteChannel(guild, channel.id);
+    const moved = await this.moveIntoChannel(member, channel);
+    if (moved) {
+      this.logger.info(`createTempChannel - Created ${isPrivate ? 'private' : 'public'} channel "${channel.name}" for ${member.user.tag} and moved them in`);
+      return;
     }
+
+    await this.discardUnusedChannel(guild, channel);
+  }
+
+  /**
+   * Move a member into the room that was just created for them.
+   *
+   * Two failures are worth telling apart. The member hanging up between the
+   * create call and the move is routine and expected, so it is logged quietly.
+   * Anything else is a server misconfiguration the operator has to act on, so it
+   * is logged loudly with the specific permission that is missing.
+   *
+   * Returns true if the member is in the channel afterwards.
+   */
+  private async moveIntoChannel(member: GuildMember, channel: VoiceChannel): Promise<boolean> {
+    try {
+      await member.voice.setChannel(channel, 'Moving member into the lounge channel created for them');
+      return true;
+    } catch (error) {
+      if (!member.voice.channelId) {
+        this.logger.info(`moveIntoChannel - ${member.user.tag} left voice before the move landed, discarding the empty channel`);
+      } else {
+        this.logger.error(
+          `moveIntoChannel - Could not move ${member.user.tag} into "${channel.name}". ${this.diagnoseMoveFailure(member.guild)}`,
+          error
+        );
+      }
+      return false;
+    }
+  }
+
+  /**
+   * Explain a failed move in terms an operator can act on, since a bare 50013
+   * from Discord does not say which permission was short.
+   */
+  private diagnoseMoveFailure(guild: Guild): string {
+    const me = guild.members.me;
+    if (!me) {
+      return 'The bot could not read its own member record in this server.';
+    }
+
+    const missing = MOVE_PERMS
+      .filter(({ flag }) => !me.permissions.has(flag))
+      .map(({ name }) => name);
+
+    if (missing.length > 0) {
+      return `The bot is missing these server permissions: ${missing.join(', ')}. Re-invite it with permissions=${REQUIRED_PERMISSION_INTEGER}, or grant them to its role in Server Settings > Roles.`;
+    }
+
+    return 'The bot holds the required server permissions, so a channel or category permission override is most likely denying it Connect or Move Members. Check the overrides on the lounge category and its channels, and make sure the bot role sits above them in Server Settings > Roles.';
+  }
+
+  /**
+   * Tear down a freshly created room that nobody made it into. Anyone who did
+   * get in keeps the room, so a move failure never disconnects a real occupant.
+   */
+  private async discardUnusedChannel(guild: Guild, channel: VoiceChannel): Promise<void> {
+    if (channel.members.size > 0) {
+      this.logger.info(`discardUnusedChannel - Keeping ${channel.id}, it already has occupants`);
+      return;
+    }
+
+    await this.deleteChannel(guild, channel.id);
   }
 
   /**
@@ -201,12 +304,16 @@ export class VoiceLoungeService {
    * - @everyone can view and join public channels; view but not join private ones.
    * - The owner gets full control plus the ability to drag members in.
    * - The mod role (if set) gets the same control over every temp channel.
+   * - The bot keeps Connect and Move Members on the room regardless, so the
+   *   @everyone Connect deny on a private room does not lock it out of the room
+   *   it is about to move the owner into.
    */
   private buildOverwrites(
     guild: Guild,
     ownerId: string,
     isPrivate: boolean,
-    modRoleId?: string
+    modRoleId?: string,
+    botId?: string
   ): OverwriteResolvable[] {
     const overwrites: OverwriteResolvable[] = [
       {
@@ -222,6 +329,12 @@ export class VoiceLoungeService {
 
     if (modRoleId && guild.roles.cache.has(modRoleId)) {
       overwrites.push({ id: modRoleId, allow: CONTROL_PERMS });
+    }
+
+    // Skipped when the bot is somehow the owner: that overwrite already covers
+    // everything here, and Discord rejects two overwrites for the same id.
+    if (botId && botId !== ownerId) {
+      overwrites.push({ id: botId, allow: BOT_PERMS });
     }
 
     return overwrites;
@@ -316,9 +429,14 @@ export class VoiceLoungeService {
     let ownerId = '';
     let isPrivate = false;
 
+    // The bot grants itself a member overwrite on every room it creates, so skip
+    // it here or it would look like the owner.
+    const botId = channel.guild.members.me?.id ?? this.client.user?.id;
+
     for (const overwrite of channel.permissionOverwrites.cache.values()) {
       if (
         overwrite.type === OverwriteType.Member &&
+        overwrite.id !== botId &&
         overwrite.allow.has(PermissionFlagsBits.ManageChannels)
       ) {
         ownerId = overwrite.id;
