@@ -6,7 +6,13 @@
 // exactly as Discord resolves them. That is what makes the private-room
 // regression reproducible without a live gateway.
 
-import { ChannelType, Events, OverwriteType, PermissionFlagsBits, PermissionsBitField } from 'discord.js';
+import { ChannelType, Collection, Events, OverwriteType, PermissionFlagsBits, PermissionsBitField } from 'discord.js';
+import {
+  CATEGORY_NAME,
+  WAITING_ROOM_NAME,
+  NEW_PUBLIC_NAME,
+  NEW_PRIVATE_NAME
+} from '../dist/config/loungeNames.js';
 
 export const BOT_ID = 'bot-1';
 export const EVERYONE_ID = 'everyone-role';
@@ -52,6 +58,23 @@ class Overwrite {
   }
 }
 
+class FakeCategoryChannel {
+  constructor(guild, { id, name }) {
+    this.guild = guild;
+    this.id = id;
+    this.name = name;
+    this.type = ChannelType.GuildCategory;
+    this.parentId = null;
+    this.renames = 0;
+  }
+
+  async setName(name) {
+    this.name = name;
+    this.renames++;
+    return this;
+  }
+}
+
 class FakeVoiceChannel {
   constructor(guild, { id, name, parent, permissionOverwrites = [] }) {
     this.guild = guild;
@@ -61,6 +84,7 @@ class FakeVoiceChannel {
     this.parentId = parent ?? null;
     this.members = new Map();
     this.deleted = false;
+    this.renames = 0;
 
     const cache = new Map();
     for (const raw of permissionOverwrites) {
@@ -100,6 +124,17 @@ class FakeVoiceChannel {
     }
   }
 
+  async setName(name) {
+    this.name = name;
+    this.renames++;
+    return this;
+  }
+
+  async setParent(parentId) {
+    this.parentId = parentId;
+    return this;
+  }
+
   /**
    * Resolve one permission for a member on this channel the way Discord does:
    * server-wide grant, then the @everyone overwrite, then the member overwrite.
@@ -121,7 +156,13 @@ class FakeVoiceChannel {
 class FakeGuild {
   constructor(id, { botPermissions }) {
     this.id = id;
-    this.channels = { cache: new Map(), create: options => this.createChannel(options) };
+    // A Collection rather than a Map: SetupCommand looks channels up by name
+    // with cache.find, which is a discord.js extension over Map.
+    this.channels = {
+      cache: new Collection(),
+      create: options => this.createChannel(options),
+      fetch: async id => (id === undefined ? this.channels.cache : this.channels.cache.get(id) ?? null)
+    };
     this.roles = { everyone: { id: EVERYONE_ID }, cache: new Map() };
     this.members = {
       me: { id: BOT_ID, permissions: bitfield(botPermissions) }
@@ -131,13 +172,13 @@ class FakeGuild {
   }
 
   async createChannel(options) {
-    const channel = new FakeVoiceChannel(this, { ...options, id: `chan-${this.nextChannelId++}` });
-    this.channels.cache.set(channel.id, channel);
-    return channel;
+    return this.addChannel({ ...options, id: `chan-${this.nextChannelId++}` });
   }
 
   addChannel(options) {
-    const channel = new FakeVoiceChannel(this, options);
+    const channel = options.type === ChannelType.GuildCategory
+      ? new FakeCategoryChannel(this, options)
+      : new FakeVoiceChannel(this, options);
     this.channels.cache.set(channel.id, channel);
     return channel;
   }
@@ -217,29 +258,75 @@ export function createClient({ botPermissions = DEFAULT_BOT_PERMISSIONS } = {}) 
   };
 }
 
+/** The names an earlier version of the bot gave the lounge, for migration tests. */
+export const LEGACY_LOUNGE = {
+  category: 'VOICE HUB',
+  waitingRoom: 'Drag Me to Private',
+  newPublic: '➕ New Public',
+  newPrivate: '➕ New Private'
+};
+
+/** The names the lounge should end up with. */
+export const CURRENT_LOUNGE = {
+  category: CATEGORY_NAME,
+  waitingRoom: WAITING_ROOM_NAME,
+  newPublic: NEW_PUBLIC_NAME,
+  newPrivate: NEW_PRIVATE_NAME
+};
+
+/**
+ * Build a guild whose lounge channels exist but are not in the store, the state
+ * a server is in before `/setup` runs (or after its config was wiped). Pass
+ * `LEGACY_LOUNGE` for a lounge built by an older version.
+ */
+export function buildLoungeChannels(client, guildId, names = CURRENT_LOUNGE) {
+  const guild = client.createGuild(guildId);
+
+  const category = guild.addChannel({
+    id: `${guildId}-category`,
+    name: names.category,
+    type: ChannelType.GuildCategory
+  });
+
+  const hub = (key, name) => guild.addChannel({ id: `${guildId}-${key}`, name, parent: category.id });
+
+  return {
+    guild,
+    category,
+    waitingRoom: hub('waiting', names.waitingRoom),
+    newPublic: hub('new-public', names.newPublic),
+    newPrivate: hub('new-private', names.newPrivate)
+  };
+}
+
 /**
  * Build a guild with a configured lounge: category, waiting room, and the two
  * join-to-create trigger channels, registered in the store.
  */
 export async function createLounge(client, store, guildId) {
-  const guild = client.createGuild(guildId);
-
-  const category = { id: `${guildId}-category`, type: ChannelType.GuildCategory };
-  guild.channels.cache.set(category.id, category);
-
-  const hub = name => guild.addChannel({ id: `${guildId}-${name}`, name, parent: category.id });
-  const waitingRoom = hub('waiting');
-  const newPublic = hub('new-public');
-  const newPrivate = hub('new-private');
+  const lounge = buildLoungeChannels(client, guildId);
 
   await store.setLounge(guildId, {
-    categoryId: category.id,
-    waitingRoomId: waitingRoom.id,
-    newPublicId: newPublic.id,
-    newPrivateId: newPrivate.id
+    categoryId: lounge.category.id,
+    waitingRoomId: lounge.waitingRoom.id,
+    newPublicId: lounge.newPublic.id,
+    newPrivateId: lounge.newPrivate.id
   });
 
-  return { guild, category, waitingRoom, newPublic, newPrivate };
+  return lounge;
+}
+
+/** A stand-in for the slash-command interaction `/setup` receives. */
+export function createInteraction(guild) {
+  const replies = [];
+  return {
+    guild,
+    replies,
+    lastReply: () => replies[replies.length - 1],
+    deferReply: async () => {},
+    reply: async content => { replies.push(typeof content === 'string' ? content : content.content); },
+    editReply: async content => { replies.push(typeof content === 'string' ? content : content.content); }
+  };
 }
 
 /** Capture console output so tests can assert on what an operator would see. */

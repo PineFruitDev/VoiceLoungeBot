@@ -8,6 +8,13 @@ import { Logger } from './Logger.js';
 export interface TempChannelRecord {
   ownerId: string;
   isPrivate: boolean;
+  /**
+   * The room's number within its type, as it appears in the channel name.
+   * Numbers are handed out lowest-free-first and are only unique per type, so a
+   * public and a private room can both be #1. Absent on records written by a
+   * version that predates numbered names.
+   */
+  index?: number;
   /** Current members, keyed by user ID, valued by join time (ms epoch). */
   members: Record<string, number>;
 }
