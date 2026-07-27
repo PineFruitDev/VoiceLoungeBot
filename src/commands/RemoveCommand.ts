@@ -34,6 +34,15 @@ interface Target {
 interface Plan {
   hubs: Target[];
   rooms: Target[];
+  /**
+   * The permanent meeting room behind `/link`, if there is one. It goes with
+   * the rest of the lounge: leaving it would keep a live invite pointing into a
+   * server that no longer has a lounge, and would sit in the category and block
+   * it from being deleted.
+   */
+  link: Target | null;
+  /** The guest role a private meeting link gated on, deleted with the room. */
+  linkRoleId?: string;
   category: CategoryChannel | null;
   /** Set when the category is being kept, explaining why. */
   categoryKeptBecause?: string;
@@ -148,15 +157,16 @@ export class RemoveCommand extends Command {
       resolve('New Private', config.newPrivateId)
     ];
     const rooms = Object.keys(config.tempChannels).map(id => resolve('Room', id));
+    const link = config.link ? resolve('Meeting room', config.link.channelId) : null;
 
-    const stored = [...hubs, ...rooms];
+    const stored = [...hubs, ...rooms, ...(link ? [link] : [])];
     const occupants = stored.reduce((total, target) => total + (target.channel?.members.size ?? 0), 0);
     const missing = stored.filter(target => !target.channel).length;
 
     const categoryChannel = guild.channels.cache.get(config.categoryId);
     const category = categoryChannel?.type === ChannelType.GuildCategory ? (categoryChannel as CategoryChannel) : null;
 
-    const plan: Plan = { hubs, rooms, category, missing, occupants };
+    const plan: Plan = { hubs, rooms, link, linkRoleId: config.link?.roleId, category, missing, occupants };
 
     if (category && config.categoryCreatedByBot === false) {
       plan.category = null;
@@ -189,6 +199,17 @@ export class RemoveCommand extends Command {
         : `🎧 **${liveRooms}** active rooms`
     );
 
+    if (plan.link) {
+      lines.push(
+        plan.link.channel
+          ? `🔗 The permanent meeting room <#${plan.link.id}>, and the \`/link\` URL that points at it`
+          : '🔗 The `/link` meeting room (already gone) and its saved URL'
+      );
+      if (plan.linkRoleId) {
+        lines.push(`🎫 The <@&${plan.linkRoleId}> guest role`);
+      }
+    }
+
     lines.push('');
     lines.push(
       plan.occupants === 0
@@ -212,13 +233,15 @@ export class RemoveCommand extends Command {
     let deleted = 0;
     let failed = 0;
 
-    // Rooms first, then the hubs, so the category is empty by the time we look.
-    for (const target of [...plan.rooms, ...plan.hubs]) {
+    // Rooms first, then the meeting room, then the hubs, so the category is
+    // empty by the time we look at it.
+    for (const target of [...plan.rooms, ...(plan.link ? [plan.link] : []), ...plan.hubs]) {
       if (!target.channel) continue;
       if (await this.deleteChannel(target.channel, 'Voice lounge removed')) deleted++;
       else failed++;
     }
 
+    const linkResult = await this.deleteLinkRole(guild, plan);
     const categoryResult = await this.deleteCategory(guild, plan);
 
     // Cleared last: while the channels are going the voice service is still
@@ -237,10 +260,31 @@ export class RemoveCommand extends Command {
       lines.push(`⚠️ **${failed}** could not be deleted. Check the bot's permissions and remove them by hand.`);
     }
 
+    if (linkResult) lines.push(linkResult);
     lines.push(categoryResult);
     lines.push('🧾 This server\'s config is cleared. Run `/setup` any time to build a fresh lounge.');
 
     return lines.join('\n');
+  }
+
+  /**
+   * Delete the guest role a private meeting link gated on. It has no
+   * permissions of its own, so leaving it would be harmless, but it would also
+   * be a role named after a room that no longer exists.
+   */
+  private async deleteLinkRole(guild: Guild, plan: Plan): Promise<string | null> {
+    if (!plan.linkRoleId) return null;
+
+    const role = guild.roles.cache.get(plan.linkRoleId);
+    if (!role) return '🎫 The meeting guest role was already gone.';
+
+    try {
+      await role.delete('Voice lounge removed');
+      return '🎫 Deleted the meeting guest role.';
+    } catch (error) {
+      this.logger.warn(`deleteLinkRole - Failed to delete ${plan.linkRoleId}:`, error);
+      return '⚠️ Could not delete the meeting guest role. Remove it by hand.';
+    }
   }
 
   /**

@@ -14,6 +14,7 @@ Built on the [TSTemplateBot](https://github.com/PineFruitDev/TSTemplateBot) arch
 - **Owner Controls**: Whoever creates a room gets Manage Channel and Manage Permissions on it, so they can rename it, set a user limit, decide who gets in, and drag people over from the waiting room
 - **Ownership Handoff**: If the owner leaves while others are still talking, control passes to whoever has been in the room longest
 - **Automatic Cleanup**: When the last person leaves a room, the bot deletes it. Empty rooms left behind by a restart are swept on the next boot
+- **Permanent Meeting Link**: `/link` hands out one URL per server that drops people straight into a voice room, stable enough to paste into a recurring calendar invite instead of a Google Meet URL
 - **Moderator Role**: Point `/setup mod-role:@Role` at a role to give it full control over every temporary room, private ones included
 - **Multi-Server**: Fully per-guild. One instance serves any number of servers, each with its own lounge and its own moderator role
 - **No Privileged Intents**: Runs on the Guilds and Voice States intents, so there is nothing to toggle in the Developer Portal
@@ -46,6 +47,8 @@ The lounge looks like this:
 | Public trigger | `➕﹕🔓 New Public` |
 | Private room | `🔒﹕Private #1`, `🔒﹕Private #2`, ... |
 | Public room | `🔓﹕Public #1`, `🔓﹕Public #2`, ... |
+| Meeting room (`/link`) | `🔗﹕Meeting Room` |
+| Meeting guest role (`/link`) | `Meeting Room Guest` |
 
 The character between the emoji and the words is **U+FE55 SMALL COLON** (`﹕`), not an ASCII colon. It sits tighter against the emoji in Discord's channel list, and unlike `:` it cannot be mistaken for the start of an emoji shortcode. A test pins the code point, so an editor that normalises it to `:` fails the build instead of quietly renaming every channel in every server on the next `/setup`.
 
@@ -77,10 +80,51 @@ Two things worth knowing:
 | `/setup mod-role:@Role` | Manage Server | Same, and give a role full control over every temporary room, private ones included |
 | `/setup clear-mod-role:True` | Manage Server | Same, and take moderator control back off whichever role has it |
 | `/remove` | Manage Server | Delete the lounge from this server and clear its config, after you confirm |
+| `/link` | Manage Server | Show this server's permanent meeting link |
+| `/link scope:public` | Manage Server | Create that link, or open it to the whole server |
+| `/link scope:private` | Manage Server | Create it gated behind a guest role instead |
+| `/link admit:@user` | Manage Server | Give someone the guest role for a private meeting room |
+| `/link revoke:True` | Manage Server | Delete the meeting room, its role, and the link |
 | `/ping` | Anyone | Latency check |
 | `/help` | Anyone | List the commands |
 
 `/setup` is safe to run again. An existing lounge is reused and, if the names have changed, renamed in place, so nothing is duplicated. It recreates only what is actually missing, which is what makes it the fix for a deleted channel or a lost config file.
+
+### A permanent meeting link
+
+`/link` gives the server one URL that never moves, so it can go in a recurring calendar invite where a Google Meet URL would otherwise sit. Follow it and you land in a voice room.
+
+```
+/link scope:public     ->  https://discord.gg/xxxxxxx
+```
+
+That URL keeps working next week and next year. Getting there takes one decision worth understanding.
+
+**Why the meeting room is permanent.** A Discord invite dies with the channel it points at. The lounge's numbered rooms are deleted the moment they empty, so an invite bound to one would be dead by the next morning. `/link` therefore keeps a room of its own, `🔗﹕Meeting Room`, which sits in the lounge category and is explicitly excluded from the cleanup sweep. It is empty between meetings and stays there. That exclusion is the single thing holding the feature up: without it the first restart would delete the room and turn the URL in your calendar into a dead link.
+
+The invite itself is created with no expiry and no use limit, and re-running `/link` checks with Discord that the stored invite is still live and reuses it rather than minting a new one. Nothing but a scope change moves the URL.
+
+**Public.** Anyone who follows the link can join the room. Members of the server walk in; people who are not in the server yet join the server and land there. No roles involved.
+
+**Private.** The room is visible to everyone but only the **Meeting Room Guest** role can connect, the same shape the lounge's private rooms use. The role is created with **no permissions at all**, so it grants nothing anywhere except the meeting room, and a copy left behind by a failed teardown is harmless.
+
+Two things get people that role:
+
+| Who | How |
+|-----|-----|
+| Someone already in the server | `/link admit:@user` |
+| Someone joining the server through the link | Discord's `role_ids`, if it takes |
+
+The second one is worth being blunt about. Discord's invite API accepts a `role_ids` field that is supposed to hand out roles to whoever accepts the invite, but it only ever concerns *accepting an invite*, so it cannot help anyone who is already a member however they arrive, and it has been reported to be accepted and then silently ignored. So the bot reads Discord's response back and tells you which of the two you got:
+
+- If Discord echoed the role, `/link` says so, and new arrivals should get it on the way in.
+- If it did not, `/link` says that instead and points you at `/link admit`.
+
+Either way `/link admit:@user` always works, and for a meeting you are inviting named people to, admitting them ahead of time is the reliable move.
+
+**Changing the scope moves the URL.** An invite's roles are fixed when it is created, so flipping between public and private has to mint a new invite. `/link` says clearly when the URL has changed. Re-running `/link` with the same scope never changes it.
+
+**A prettier URL.** `https://discord.gg/xxxxxxx` is stable but not memorable. If you want `meet.example.com/standup`, put a redirect in front of it. That lives in whatever hosts your domain, not in this bot, and the only thing it needs from here is the invite code `/link` prints. The upside of doing it is that you could then re-issue the invite without touching what people already have in their calendars.
 
 ### What the room owner can do
 
@@ -161,13 +205,13 @@ No privileged intents are required.
 Invite it with the `bot` and `applications.commands` scopes and this permissions integer:
 
 ```
-288359440
+288359441
 ```
 
 Invite URL template (swap in your client ID):
 
 ```
-https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=288359440&scope=bot%20applications.commands
+https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=288359441&scope=bot%20applications.commands
 ```
 
 That number is the sum of the permissions the bot actually uses:
@@ -180,6 +224,7 @@ That number is the sum of the permissions the bot actually uses:
 | Move Members | Move a member into the room the bot just created for them |
 | Connect | Required alongside Move Members to move members into voice |
 | Speak | So the owner and mod overwrites it grants are valid |
+| Create Invite | Mint the permanent invite behind `/link`. Only `/link` uses it; without it every other feature still works |
 
 Place the bot's role high enough in **Server Settings > Roles** that it can manage the lounge channels.
 
@@ -264,7 +309,7 @@ When a move fails anyway, the bot logs the cause rather than failing quietly:
 
 ```
 [VoiceLoungeService] moveIntoChannel - Could not move Sky#0001 into "🔓﹕Public #1". The bot is
-missing these server permissions: Move Members. Re-invite it with permissions=288359440,
+missing these server permissions: Move Members. Re-invite it with permissions=288359441,
 or grant them to its role in Server Settings > Roles.
 ```
 
