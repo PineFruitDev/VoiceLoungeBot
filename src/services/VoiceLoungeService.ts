@@ -12,7 +12,12 @@ import {
 } from 'discord.js';
 import { Logger } from './Logger.js';
 import { GuildConfigStore, GuildConfig } from './GuildConfigStore.js';
-import { tempRoomName, parseRoomIndex } from '../config/loungeNames.js';
+import {
+  tempRoomName,
+  parseRoomIndex,
+  LINK_ROOM_NAME,
+  LEGACY_LINK_ROOM_NAMES
+} from '../config/loungeNames.js';
 
 /**
  * What a room owner (and the mod role) gets the moment the room is created.
@@ -86,7 +91,11 @@ const INVITE_PERMS = [
   { flag: PermissionFlagsBits.ManageRoles, name: 'Manage Roles' },
   { flag: PermissionFlagsBits.MoveMembers, name: 'Move Members' },
   { flag: PermissionFlagsBits.Connect, name: 'Connect' },
-  { flag: PermissionFlagsBits.Speak, name: 'Speak' }
+  { flag: PermissionFlagsBits.Speak, name: 'Speak' },
+  // Only `/link` needs this one, to mint the permanent invite behind the
+  // meeting URL. Adding it moved the invite integer, so a server set up before
+  // `/link` existed has to re-invite the bot before `/link` will work.
+  { flag: PermissionFlagsBits.CreateInstantInvite, name: 'Create Invite' }
 ];
 
 /** The README's invite permissions integer, derived from the list above. */
@@ -614,12 +623,19 @@ export class VoiceLoungeService {
 
       // Candidate temp channels: persisted records plus anything parked in the
       // lounge category that is not one of the three hub channels.
+      //
+      // The meeting room is excluded and the exclusion is load bearing. It sits
+      // under the same category and is empty between meetings, which is exactly
+      // the shape of an orphan, so without this the first restart after `/link`
+      // would delete it, take the invite down with it, and turn a URL already
+      // sitting in somebody's recurring calendar invite into a dead link.
       const candidateIds = new Set<string>(Object.keys(config.tempChannels));
       for (const channel of guild.channels.cache.values()) {
         if (
           channel.type === ChannelType.GuildVoice &&
           channel.parentId === config.categoryId &&
-          !this.store.isHubChannel(guildId, channel.id)
+          !this.store.isHubChannel(guildId, channel.id) &&
+          !this.isMeetingRoom(guildId, channel.id, channel.name)
         ) {
           candidateIds.add(channel.id);
         }
@@ -676,6 +692,26 @@ export class VoiceLoungeService {
     }
 
     this.logger.info('sweepOrphans - Reconciliation complete');
+  }
+
+  /**
+   * Whether a channel is the permanent `/link` meeting room, by ID or by name.
+   *
+   * The name check is not belt and braces, it closes a hole the ID check cannot
+   * reach. Lose `guilds.json` and the link record goes with it, so the ID says
+   * no about a room that is still sitting in the category with a live invite
+   * pointing at it. The sweep runs on boot, before anyone can run `/link` to
+   * repair the record, so an ID-only check would delete the room during exactly
+   * the recovery that is supposed to save it. Matching by name is the same
+   * idiom `/setup` uses to turn a lost config into a repair rather than a
+   * second lounge.
+   */
+  private isMeetingRoom(guildId: string, channelId: string, name: string): boolean {
+    return (
+      this.store.isLinkChannel(guildId, channelId) ||
+      name === LINK_ROOM_NAME ||
+      LEGACY_LINK_ROOM_NAMES.includes(name)
+    );
   }
 
   /**
