@@ -86,7 +86,7 @@ Two things worth knowing:
 | `/link admit:@user` | Manage Server | Give someone the guest role for a private meeting room |
 | `/link revoke:True` | Manage Server | Delete the meeting room, its role, and the link |
 | `/ping` | Anyone | Latency check |
-| `/help` | Anyone | List the commands |
+| `/help` | Anyone | List every command, its options, and what each option accepts |
 
 `/setup` is safe to run again. An existing lounge is reused and, if the names have changed, renamed in place, so nothing is duplicated. It recreates only what is actually missing, which is what makes it the fix for a deleted channel or a lost config file.
 

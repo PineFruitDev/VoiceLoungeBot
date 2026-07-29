@@ -56,9 +56,6 @@ export class LinkCommand extends Command {
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild);
 
   public readonly helpInfo: CommandHelpInfo = {
-    name: 'link',
-    description: 'Show or create a permanent link that drops people into a voice room',
-    usage: '/link [scope:public|private] [admit:@user] [revoke:True]',
     examples: ['/link', '/link scope:private', '/link admit:@Guest', '/link revoke:True'],
     category: 'Admin'
   };

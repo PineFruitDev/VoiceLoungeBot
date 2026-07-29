@@ -7,13 +7,16 @@ import {
 import { Environment } from '../services/Environment.js';
 
 /**
- * Help information for commands
+ * The half of a command's help that is not already in its builder.
+ *
+ * Name, description, options, and choices all live on `data` and are rendered
+ * straight off it by `/help`, so they are deliberately not repeated here. What
+ * is left is the two things Discord's registration data has no room for.
  */
 export interface CommandHelpInfo {
-  name: string;
-  description: string;
-  usage: string;
+  /** Worked examples, in the order they are worth reading. */
   examples: string[];
+  /** The heading `/help` files this command under. */
   category: string;
 }
 
@@ -59,10 +62,11 @@ export abstract class Command {
   }
 
   /**
-   * Get the command description
+   * Get the command description, as registered with Discord. Read off `data`
+   * rather than restated, so what `/help` prints is what Discord shows.
    */
   public getDescription(): string {
-    return this.helpInfo.description;
+    return this.data.description;
   }
 
   /**

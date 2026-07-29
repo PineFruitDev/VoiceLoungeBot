@@ -71,9 +71,6 @@ export class RemoveCommand extends Command {
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild);
 
   public readonly helpInfo: CommandHelpInfo = {
-    name: 'remove',
-    description: 'Delete the voice lounge from this server and clear its config',
-    usage: '/remove',
     examples: ['/remove'],
     category: 'Admin'
   };
