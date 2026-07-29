@@ -37,12 +37,22 @@ export const DEFAULT_BOT_PERMISSIONS = [
   PermissionFlagsBits.ManageRoles,
   PermissionFlagsBits.MoveMembers,
   PermissionFlagsBits.Connect,
-  PermissionFlagsBits.Speak
+  PermissionFlagsBits.Speak,
+  PermissionFlagsBits.CreateInstantInvite
 ];
 
 /** The same invite with Manage Permissions withheld, which is the broken case. */
 export const BOT_WITHOUT_MANAGE_ROLES = DEFAULT_BOT_PERMISSIONS.filter(
   flag => flag !== PermissionFlagsBits.ManageRoles
+);
+
+/**
+ * What every server that set the bot up before `/link` existed is holding.
+ * Create Invite was added to the invite integer for that command, so an install
+ * that has not been re-invited cannot mint the meeting invite.
+ */
+export const BOT_WITHOUT_CREATE_INVITE = DEFAULT_BOT_PERMISSIONS.filter(
+  flag => flag !== PermissionFlagsBits.CreateInstantInvite
 );
 
 /** Discord's error for "you do not have permission to do that". */
@@ -171,16 +181,26 @@ class FakeVoiceChannel {
       cache,
       edit: async (target, flags) => {
         const id = typeof target === 'string' ? target : target.id;
-        const allow = Object.entries(flags)
-          .filter(([, on]) => on)
+        const bits = wanted => Object.entries(flags)
+          .filter(([, on]) => on === wanted)
           .map(([name]) => PermissionFlagsBits[name]);
 
+        const allow = bits(true);
         this.assertCanGrant(allow);
+
+        // Discord merges an edit into the existing overwrite rather than
+        // replacing it, and a flag set to false is a deny rather than an
+        // absence. Both matter to `/link`, which flips an @everyone Connect
+        // between allow and deny to change a room's scope in place.
+        const existing = cache.get(id);
+        const deny = bits(false);
+        const keep = flag => !allow.includes(flag) && !deny.includes(flag);
 
         cache.set(id, new Overwrite({
           id,
           type: id === EVERYONE_ID || guild.roles.cache.has(id) ? OverwriteType.Role : OverwriteType.Member,
-          allow
+          allow: [...(existing ? existing.allow.toArray().map(n => PermissionFlagsBits[n]).filter(keep) : []), ...allow],
+          deny: [...(existing ? existing.deny.toArray().map(n => PermissionFlagsBits[n]).filter(keep) : []), ...deny]
         }));
       },
       delete: async id => {
@@ -259,10 +279,17 @@ class FakeGuild {
       create: options => this.createChannel(options),
       fetch: async id => (id === undefined ? this.channels.cache : this.channels.cache.get(id) ?? null)
     };
-    this.roles = { everyone: { id: EVERYONE_ID }, cache: new Map() };
-    this.members = {
-      me: { id: BOT_ID, permissions: bitfield(botPermissions) }
+    this.roles = {
+      everyone: { id: EVERYONE_ID },
+      // A Collection rather than a Map: MeetingLinkService looks a role up by
+      // name with cache.find when the stored ID has been lost.
+      cache: new Collection(),
+      create: async options => this.addRole(`role-${this.nextRoleId}`, options)
     };
+    this.members = {
+      me: { id: BOT_ID, permissions: bitfield(botPermissions), roles: { highest: { position: 10 } } }
+    };
+    this.nextRoleId = 1;
     this.nextChannelId = 1;
     this.listeners = [];
     // Who the client has in its user cache. The bot itself always is.
@@ -318,9 +345,28 @@ class FakeGuild {
     throw new UncachedOverwriteTarget(id);
   }
 
-  /** Register a role so overwrites for it resolve as a role rather than a member. */
-  addRole(id) {
-    const role = { id, name: id };
+  /**
+   * Register a role so overwrites for it resolve as a role rather than a member.
+   *
+   * `position` defaults below the bot's own highest role, which is where Discord
+   * puts a freshly created role and is what makes it assignable. Raise it past
+   * the bot to reproduce the hierarchy failure.
+   */
+  addRole(id, { name, position = 1, permissions = [] } = {}) {
+    this.nextRoleId++;
+    const guild = this;
+    const role = {
+      id,
+      name: name ?? id,
+      position,
+      permissions: bitfield(permissions),
+      deleted: false,
+      delete: async () => {
+        if (role.failDelete) throw role.failDelete;
+        role.deleted = true;
+        guild.roles.cache.delete(id);
+      }
+    };
     this.roles.cache.set(id, role);
     return role;
   }
@@ -341,6 +387,18 @@ class FakeGuild {
       guild,
       user: { tag: `${displayName}#0001` },
       permissions: bitfield([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak]),
+      roles: {
+        cache: new Collection(),
+        add: async roleId => {
+          // Discord's rule: a bot cannot hand out a role positioned at or above
+          // its own highest one, and says only "Missing Permissions" about it.
+          const role = guild.roles.cache.get(roleId);
+          if (role && role.position >= guild.members.me.roles.highest.position) {
+            throw new MissingPermissions('Role is not below the bot\'s highest role');
+          }
+          member.roles.cache.set(roleId, role);
+        }
+      },
       voice: {
         channelId: null,
         setChannel: async destination => {
@@ -465,6 +523,56 @@ export async function createLounge(client, store, guildId) {
   return lounge;
 }
 
+/**
+ * A stand-in for Discord's two invite endpoints.
+ *
+ * `grantsRoles` is the knob that matters. Discord accepts `role_ids` on an
+ * invite and does not always act on it, and the only signal the bot gets is
+ * whether the field comes back in the response, so this fake can echo it or
+ * swallow it and the command has to cope with both.
+ */
+export function createInviteApi({ grantsRoles = true } = {}) {
+  const invites = [];
+  let nextCode = 1;
+
+  return {
+    invites,
+    /** Drop an invite the way an admin revoking it in the client would. */
+    expire: code => {
+      const index = invites.findIndex(invite => invite.code === code);
+      if (index >= 0) invites.splice(index, 1);
+    },
+    list: async channelId => invites.filter(invite => invite.channelId === channelId),
+    create: async (channelId, body) => {
+      // Discord echoes the invite's own settings back at the top level, which is
+      // how a permanent invite is told apart from a 24 hour one on a later read.
+      const invite = {
+        code: `code-${nextCode++}`,
+        channelId,
+        max_age: body.max_age,
+        max_uses: body.max_uses,
+        ...(grantsRoles && body.role_ids ? { role_ids: body.role_ids } : {})
+      };
+      invites.push(invite);
+      return invite;
+    },
+    remove: async code => {
+      const index = invites.findIndex(invite => invite.code === code);
+      if (index < 0) throw new UnknownInvite();
+      invites.splice(index, 1);
+    }
+  };
+}
+
+/** Discord's error for acting on an invite that is no longer there. */
+export class UnknownInvite extends Error {
+  constructor() {
+    super('Unknown Invite');
+    this.name = 'DiscordAPIError[10006]';
+    this.code = 10006;
+  }
+}
+
 /** Discord's error for acting on a channel that is no longer there. */
 export class UnknownChannel extends Error {
   constructor() {
@@ -526,7 +634,9 @@ export function createInteraction(guild, options = {}, { userId = 'admin-1', ans
         if (!value && required) throw new Error(`Missing required option: ${name}`);
         return value;
       },
-      getBoolean: name => options[name] ?? null
+      getBoolean: name => options[name] ?? null,
+      getString: name => options[name] ?? null,
+      getMember: name => options[name] ?? null
     }
   };
 }

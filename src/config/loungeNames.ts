@@ -24,6 +24,18 @@ export const NEW_PRIVATE_NAME = '➕﹕🔒 New Private';
 export const NEW_PUBLIC_NAME = '➕﹕🔓 New Public';
 
 /**
+ * The permanent room `/link` hands out a stable URL for.
+ *
+ * Unlike the numbered rooms below it is never torn down when it empties, which
+ * is the whole point: an invite dies with its channel, and a link pasted into a
+ * recurring calendar invite has to outlive every meeting held in it.
+ */
+export const LINK_ROOM_NAME = '🔗﹕Meeting Room';
+
+/** The role a private meeting link grants, and gates its room on. */
+export const LINK_ROLE_NAME = 'Meeting Room Guest';
+
+/**
  * Names for the rooms the bot spins up, numbered per type. Edit these and the
  * index parser below follows, so a number is only ever written in one place.
  */
@@ -45,6 +57,7 @@ export const LEGACY_CATEGORY_NAMES = ['VOICE HUB'];
 export const LEGACY_WAITING_ROOM_NAMES = ['Drag Me to Private'];
 export const LEGACY_NEW_PRIVATE_NAMES = ['➕ New Private'];
 export const LEGACY_NEW_PUBLIC_NAMES = ['➕ New Public'];
+export const LEGACY_LINK_ROOM_NAMES: string[] = [];
 
 /** Placeholder that cannot occur in a channel name, used to split a template. */
 const SLOT = '\u0000';
