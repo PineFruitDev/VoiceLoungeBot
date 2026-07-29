@@ -11,7 +11,13 @@ import {
 } from 'discord.js';
 import { Command, CommandHelpInfo } from '../core/Command.js';
 import { GuildConfigStore, GuildConfig } from '../services/GuildConfigStore.js';
-import { CONTROL_FLAGS, BASE_CONTROL_FLAGS, diagnoseManagePermissions } from '../services/VoiceLoungeService.js';
+import {
+  CONTROL_FLAGS,
+  BASE_CONTROL_FLAGS,
+  diagnoseManagePermissions,
+  REQUIRED_PERMISSION_INTEGER
+} from '../services/VoiceLoungeService.js';
+import { LoungeGuideService, GuideResult } from '../services/LoungeGuideService.js';
 import { Logger } from '../services/Logger.js';
 import {
   CATEGORY_NAME,
@@ -149,6 +155,12 @@ export class SetupCommand extends Command {
 
     const modLine = await this.applyModRole(guild, store, existing?.modRoleId, requestedModRole?.id, clearModRole);
 
+    // Last, and against the config as it now stands, so the notice is written
+    // from settled state rather than from a config still being changed under
+    // it. The guide says nothing about the moderator role today, but ordering
+    // it this way means it still would not have to if it ever did.
+    const guide = await new LoungeGuideService().ensureGuide(guild, store, store.getGuild(guild.id)!);
+
     const renamed = [category, waitingRoom, newPublic, newPrivate].filter(result => result.action === 'renamed');
     const renameLine = renamed.length > 0
       ? `\n\n♻️ Renamed ${renamed.length} existing channel${renamed.length === 1 ? '' : 's'} in place: ` +
@@ -161,10 +173,32 @@ export class SetupCommand extends Command {
       `🚪 **Waiting room:** <#${waitingRoom.channel.id}>\n` +
       `🔓 **New Public:** <#${newPublic.channel.id}> (join to spawn a public channel you control)\n` +
       `🔒 **New Private:** <#${newPrivate.channel.id}> (join to spawn a private channel only you can enter)` +
+      this.guideLine(guide) +
       modLine +
       renameLine +
       this.managePermissionsWarning(guild, category.channel.id)
     );
+  }
+
+  /**
+   * The line `/setup` adds about the how-it-works channel.
+   *
+   * A failure here is a warning rather than an error: the lounge itself is
+   * built and working, and the only thing missing is the notice board. It still
+   * names the re-invite integer, because on an install that predates the guide
+   * that is exactly what is wrong.
+   */
+  private guideLine(guide: GuideResult): string {
+    if (guide.action === 'failed') {
+      return (
+        `\n\n⚠️ **Could not write the how-it-works channel.** ${guide.error}\n` +
+        `Re-invite the bot with \`permissions=${REQUIRED_PERMISSION_INTEGER}\`, or grant it those on its ` +
+        'role in Server Settings > Roles, then run `/setup` again. The lounge itself works either way.'
+      );
+    }
+
+    const what = guide.action === 'created' ? 'posted' : guide.action === 'edited' ? 'updated' : 'already up to date';
+    return `\n📖 **How it works:** <#${guide.channel!.id}> (read only, ${what})`;
   }
 
   /**

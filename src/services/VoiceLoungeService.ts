@@ -84,18 +84,31 @@ const BOT_PERMS = [
  * The permissions the bot is invited with, as documented in the README. The
  * invite integer is derived from this list rather than written down twice, so
  * the number the code tells operators to use cannot drift from what it needs.
+ *
+ * `move` marks the ones a failed member move is worth blaming, which is not the
+ * whole list: a bot that cannot post the how-it-works message still moves people
+ * perfectly well, and naming it in that diagnosis would send an admin off fixing
+ * the wrong thing.
  */
 const INVITE_PERMS = [
-  { flag: PermissionFlagsBits.ViewChannel, name: 'View Channels' },
-  { flag: PermissionFlagsBits.ManageChannels, name: 'Manage Channels' },
-  { flag: PermissionFlagsBits.ManageRoles, name: 'Manage Roles' },
-  { flag: PermissionFlagsBits.MoveMembers, name: 'Move Members' },
-  { flag: PermissionFlagsBits.Connect, name: 'Connect' },
-  { flag: PermissionFlagsBits.Speak, name: 'Speak' },
+  { flag: PermissionFlagsBits.ViewChannel, name: 'View Channels', move: true },
+  { flag: PermissionFlagsBits.ManageChannels, name: 'Manage Channels', move: true },
+  { flag: PermissionFlagsBits.ManageRoles, name: 'Manage Roles', move: true },
+  { flag: PermissionFlagsBits.MoveMembers, name: 'Move Members', move: true },
+  { flag: PermissionFlagsBits.Connect, name: 'Connect', move: true },
+  { flag: PermissionFlagsBits.Speak, name: 'Speak', move: false },
   // Only `/link` needs this one, to mint the permanent invite behind the
   // meeting URL. Adding it moved the invite integer, so a server set up before
   // `/link` existed has to re-invite the bot before `/link` will work.
-  { flag: PermissionFlagsBits.CreateInstantInvite, name: 'Create Invite' }
+  { flag: PermissionFlagsBits.CreateInstantInvite, name: 'Create Invite', move: false },
+  // The three below are the how-it-works channel `/setup` writes: post the
+  // message, render it as an embed, and read the channel back to find the
+  // message it already posted instead of posting a second one. Adding them
+  // moved the invite integer again, so an install predating the guide channel
+  // has to re-invite before `/setup` can write it.
+  { flag: PermissionFlagsBits.SendMessages, name: 'Send Messages', move: false },
+  { flag: PermissionFlagsBits.EmbedLinks, name: 'Embed Links', move: false },
+  { flag: PermissionFlagsBits.ReadMessageHistory, name: 'Read Message History', move: false }
 ];
 
 /** The README's invite permissions integer, derived from the list above. */
@@ -104,7 +117,7 @@ export const REQUIRED_PERMISSION_INTEGER = INVITE_PERMS
   .toString();
 
 /** The subset of the above that a failed move is worth checking against. */
-const MOVE_PERMS = INVITE_PERMS.filter(({ name }) => name !== 'Speak');
+const MOVE_PERMS = INVITE_PERMS.filter(({ move }) => move);
 
 /**
  * Whether the bot can hand Manage Permissions to a room owner in this server,

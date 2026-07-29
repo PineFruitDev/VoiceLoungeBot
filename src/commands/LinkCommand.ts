@@ -10,6 +10,7 @@ import { Command, CommandHelpInfo } from '../core/Command.js';
 import { GuildConfigStore, GuildConfig, MeetingLinkRecord } from '../services/GuildConfigStore.js';
 import { MeetingLinkService, InviteApi, LinkScope, inviteUrl } from '../services/MeetingLinkService.js';
 import { REQUIRED_PERMISSION_INTEGER } from '../services/VoiceLoungeService.js';
+import { LoungeGuideService } from '../services/LoungeGuideService.js';
 import { Logger } from '../services/Logger.js';
 
 /**
@@ -152,6 +153,11 @@ export class LinkCommand extends Command {
       return this.explainFailure(guild, error);
     }
 
+    // The how-it-works channel describes the meeting room and says whether the
+    // server can walk into it, so both halves of that go stale the moment the
+    // scope moves. Idempotent, so a run that changed nothing costs no edit.
+    await this.refreshGuide(guild, store);
+
     const { record, channel, role, urlChanged, roomCreated } = result;
     const url = inviteUrl(record.inviteCode);
 
@@ -279,6 +285,10 @@ export class LinkCommand extends Command {
 
     const { roomDeleted, roleDeleted } = await service.revoke(guild, store, link);
 
+    // Drops the meeting section out of the guide, rather than leaving it
+    // pointing at a room that is no longer there.
+    await this.refreshGuide(guild, store);
+
     const lines = [
       '✅ **Meeting link revoked.**',
       roomDeleted ? '🗑️ Deleted the meeting room.' : '⚠️ Could not delete the meeting room. Remove it by hand.',
@@ -290,6 +300,24 @@ export class LinkCommand extends Command {
     lines.push('Run `/link scope:public` or `/link scope:private` any time to make a new one.');
 
     return lines.join('\n');
+  }
+
+  /**
+   * Rewrite the how-it-works message against the config as it now stands.
+   *
+   * Read back out of the store rather than patched by hand, so the guide is
+   * always describing what was actually saved. A failure is swallowed on
+   * purpose: `/link` succeeded, and `/setup` is the command that reports on the
+   * guide channel and tells an admin how to fix it.
+   */
+  private async refreshGuide(guild: Guild, store: GuildConfigStore): Promise<void> {
+    const config = store.getGuild(guild.id);
+    if (!config) return;
+
+    const result = await new LoungeGuideService().ensureGuide(guild, store, config);
+    if (result.action === 'failed') {
+      this.logger.warn(`refreshGuide - Could not refresh the guide in guild ${guild.id}: ${result.error}`);
+    }
   }
 
   /**
