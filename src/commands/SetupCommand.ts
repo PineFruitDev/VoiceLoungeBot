@@ -78,9 +78,6 @@ export class SetupCommand extends Command {
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild);
 
   public readonly helpInfo: CommandHelpInfo = {
-    name: 'setup',
-    description: 'Create or repair the voice lounge, and set the moderator role',
-    usage: '/setup [mod-role:@Role] [clear-mod-role:True]',
     examples: ['/setup', '/setup mod-role:@Moderators', '/setup clear-mod-role:True'],
     category: 'Admin'
   };
