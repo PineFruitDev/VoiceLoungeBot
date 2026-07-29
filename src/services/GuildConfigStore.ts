@@ -55,6 +55,14 @@ export interface GuildConfig {
   newPublicId: string;
   newPrivateId: string;
   /**
+   * The read-only how-it-works channel and the one message in it. Both are
+   * absent on a lounge built before the guide existed, and both are recoverable
+   * without the store: the channel by its name under the category, the message
+   * by being the bot's own in a channel nobody else can post in.
+   */
+  guideChannelId?: string;
+  guideMessageId?: string;
+  /**
    * Whether the bot created the lounge category itself, as opposed to adopting
    * one that was already in the server. `/remove` will not delete a category it
    * knows it did not make. Absent on records written before this was tracked,
@@ -163,10 +171,25 @@ export class GuildConfigStore {
     const existing = this.data.guilds[guildId];
     this.data.guilds[guildId] = {
       ...lounge,
+      guideChannelId: existing?.guideChannelId,
+      guideMessageId: existing?.guideMessageId,
       modRoleId: existing?.modRoleId,
       link: existing?.link,
       tempChannels: existing?.tempChannels ?? {}
     };
+    await this.persist();
+  }
+
+  /**
+   * Record where the how-it-works message ended up. Written on every `/setup`
+   * so a message an admin deleted by hand is replaced rather than edited into
+   * nothing on the next run.
+   */
+  public async setGuide(guildId: string, channelId: string, messageId: string): Promise<void> {
+    const config = this.data.guilds[guildId];
+    if (!config) return;
+    config.guideChannelId = channelId;
+    config.guideMessageId = messageId;
     await this.persist();
   }
 

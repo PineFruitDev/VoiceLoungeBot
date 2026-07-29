@@ -14,6 +14,13 @@
 /** The category the whole lounge lives under. */
 export const CATEGORY_NAME = '| VOICE LOUNGE |';
 
+/**
+ * The read-only text channel explaining the lounge, pinned at the top of the
+ * category. Members can read it and nothing else, so it stays the one message
+ * in there rather than turning into a chat channel.
+ */
+export const GUIDE_CHANNEL_NAME = 'how-it-works';
+
 /** The lobby people sit in to be dragged into someone's private room. */
 export const WAITING_ROOM_NAME = '👀﹕Drag Me to Private';
 
@@ -54,6 +61,7 @@ export function tempRoomName(isPrivate: boolean, index: number): string {
  * should be migrated rather than left with a stray channel.
  */
 export const LEGACY_CATEGORY_NAMES = ['VOICE HUB'];
+export const LEGACY_GUIDE_CHANNEL_NAMES: string[] = [];
 export const LEGACY_WAITING_ROOM_NAMES = ['Drag Me to Private'];
 export const LEGACY_NEW_PRIVATE_NAMES = ['➕ New Private'];
 export const LEGACY_NEW_PUBLIC_NAMES = ['➕ New Public'];

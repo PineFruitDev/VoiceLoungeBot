@@ -27,7 +27,7 @@ const CONFIRM_TIMEOUT_MS = 60_000;
 interface Target {
   label: string;
   id: string;
-  channel: VoiceChannel | null;
+  channel: GuildChannel | null;
 }
 
 /** Everything `/remove` intends to do, worked out before anyone confirms. */
@@ -43,6 +43,12 @@ interface Plan {
   link: Target | null;
   /** The guest role a private meeting link gated on, deleted with the room. */
   linkRoleId?: string;
+  /**
+   * The read-only how-it-works channel. It goes with the lounge for the same
+   * reason the meeting room does: it sits in the category and would both block
+   * the category from being deleted and outlive every channel it describes.
+   */
+  guide: Target | null;
   category: CategoryChannel | null;
   /** Set when the category is being kept, explaining why. */
   categoryKeptBecause?: string;
@@ -139,31 +145,41 @@ export class RemoveCommand extends Command {
    * warning names real channels and a real head count rather than a guess.
    */
   private buildPlan(guild: Guild, config: GuildConfig): Plan {
-    const resolve = (label: string, id: string): Target => {
+    const resolve = (label: string, id: string, type: ChannelType): Target => {
       const channel = guild.channels.cache.get(id);
       return {
         label,
         id,
-        channel: channel?.type === ChannelType.GuildVoice ? (channel as VoiceChannel) : null
+        channel: channel?.type === type ? (channel as GuildChannel) : null
       };
     };
+    const voice = (label: string, id: string) => resolve(label, id, ChannelType.GuildVoice);
 
     const hubs = [
-      resolve('Waiting room', config.waitingRoomId),
-      resolve('New Public', config.newPublicId),
-      resolve('New Private', config.newPrivateId)
+      voice('Waiting room', config.waitingRoomId),
+      voice('New Public', config.newPublicId),
+      voice('New Private', config.newPrivateId)
     ];
-    const rooms = Object.keys(config.tempChannels).map(id => resolve('Room', id));
-    const link = config.link ? resolve('Meeting room', config.link.channelId) : null;
+    const rooms = Object.keys(config.tempChannels).map(id => voice('Room', id));
+    const link = config.link ? voice('Meeting room', config.link.channelId) : null;
+    const guide = config.guideChannelId
+      ? resolve('How it works', config.guideChannelId, ChannelType.GuildText)
+      : null;
 
-    const stored = [...hubs, ...rooms, ...(link ? [link] : [])];
-    const occupants = stored.reduce((total, target) => total + (target.channel?.members.size ?? 0), 0);
+    const stored = [...hubs, ...rooms, ...(link ? [link] : []), ...(guide ? [guide] : [])];
+    // Only voice channels have people sitting in them. A text channel's
+    // `members` is everyone who can read it, which is not the same question.
+    const occupants = stored.reduce(
+      (total, target) =>
+        total + (target.channel?.type === ChannelType.GuildVoice ? (target.channel as VoiceChannel).members.size : 0),
+      0
+    );
     const missing = stored.filter(target => !target.channel).length;
 
     const categoryChannel = guild.channels.cache.get(config.categoryId);
     const category = categoryChannel?.type === ChannelType.GuildCategory ? (categoryChannel as CategoryChannel) : null;
 
-    const plan: Plan = { hubs, rooms, link, linkRoleId: config.link?.roleId, category, missing, occupants };
+    const plan: Plan = { hubs, rooms, link, linkRoleId: config.link?.roleId, guide, category, missing, occupants };
 
     if (category && config.categoryCreatedByBot === false) {
       plan.category = null;
@@ -207,6 +223,14 @@ export class RemoveCommand extends Command {
       }
     }
 
+    if (plan.guide) {
+      lines.push(
+        plan.guide.channel
+          ? `📖 The how-it-works channel <#${plan.guide.id}>`
+          : '📖 The how-it-works channel (already gone)'
+      );
+    }
+
     lines.push('');
     lines.push(
       plan.occupants === 0
@@ -230,9 +254,16 @@ export class RemoveCommand extends Command {
     let deleted = 0;
     let failed = 0;
 
-    // Rooms first, then the meeting room, then the hubs, so the category is
-    // empty by the time we look at it.
-    for (const target of [...plan.rooms, ...(plan.link ? [plan.link] : []), ...plan.hubs]) {
+    // Rooms first, then the meeting room, the guide channel, and the hubs, so
+    // the category is empty by the time we look at it.
+    const targets = [
+      ...plan.rooms,
+      ...(plan.link ? [plan.link] : []),
+      ...(plan.guide ? [plan.guide] : []),
+      ...plan.hubs
+    ];
+
+    for (const target of targets) {
       if (!target.channel) continue;
       if (await this.deleteChannel(target.channel, 'Voice lounge removed')) deleted++;
       else failed++;
