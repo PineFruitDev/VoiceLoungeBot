@@ -261,7 +261,13 @@ test('setup renames an existing lounge in place rather than duplicating it', asy
   assert.equal(lounge.newPublic.name, NEW_PUBLIC_NAME);
   assert.equal(lounge.newPrivate.name, NEW_PRIVATE_NAME);
 
-  assert.equal(lounge.guild.channels.cache.size, channelsBefore, 'nothing new should have been created');
+  // The one addition is the how-it-works channel, which a lounge built under
+  // the old names never had. The four voice channels are adopted, not replaced.
+  assert.equal(
+    lounge.guild.channels.cache.size,
+    channelsBefore + 1,
+    'only the how-it-works channel should be new'
+  );
 
   const config = store.getGuild(guildId);
   assert.equal(config.categoryId, lounge.category.id, 'the existing category should be reused');
@@ -282,7 +288,11 @@ test('setup repairs a lounge whose stored IDs were wiped, by name', async () => 
 
   await new SetupCommand().execute(createInteraction(lounge.guild));
 
-  assert.equal(lounge.guild.channels.cache.size, channelsBefore, 'the old channels should be adopted, not replaced');
+  assert.equal(
+    lounge.guild.channels.cache.size,
+    channelsBefore + 1,
+    'the old channels should be adopted, not replaced, and only the guide added'
+  );
   assert.equal(lounge.category.name, CATEGORY_NAME);
   assert.equal(lounge.newPrivate.name, NEW_PRIVATE_NAME);
 
