@@ -10,9 +10,6 @@ export class PingCommand extends Command {
     .setDescription('Check the bot latency');
 
   public readonly helpInfo: CommandHelpInfo = {
-    name: 'ping',
-    description: 'Check the bot latency',
-    usage: '/ping',
     examples: ['/ping'],
     category: 'Utility'
   };

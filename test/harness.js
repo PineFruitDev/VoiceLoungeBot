@@ -38,7 +38,10 @@ export const DEFAULT_BOT_PERMISSIONS = [
   PermissionFlagsBits.MoveMembers,
   PermissionFlagsBits.Connect,
   PermissionFlagsBits.Speak,
-  PermissionFlagsBits.CreateInstantInvite
+  PermissionFlagsBits.CreateInstantInvite,
+  PermissionFlagsBits.SendMessages,
+  PermissionFlagsBits.EmbedLinks,
+  PermissionFlagsBits.ReadMessageHistory
 ];
 
 /** The same invite with Manage Permissions withheld, which is the broken case. */
@@ -53,6 +56,17 @@ export const BOT_WITHOUT_MANAGE_ROLES = DEFAULT_BOT_PERMISSIONS.filter(
  */
 export const BOT_WITHOUT_CREATE_INVITE = DEFAULT_BOT_PERMISSIONS.filter(
   flag => flag !== PermissionFlagsBits.CreateInstantInvite
+);
+
+/**
+ * The same invite without the three the how-it-works channel needs, which is
+ * what every server set up before that channel existed is holding.
+ */
+export const BOT_WITHOUT_SEND_MESSAGES = DEFAULT_BOT_PERMISSIONS.filter(
+  flag =>
+    flag !== PermissionFlagsBits.SendMessages &&
+    flag !== PermissionFlagsBits.EmbedLinks &&
+    flag !== PermissionFlagsBits.ReadMessageHistory
 );
 
 /** Discord's error for "you do not have permission to do that". */
@@ -269,6 +283,122 @@ class FakeVoiceChannel {
   }
 }
 
+/**
+ * A text channel with just enough of a message store to hold one notice.
+ *
+ * `send` checks the bot's guild-wide permission rather than the channel's
+ * resolved one on purpose. A bot that was never invited with Send Messages
+ * could not have granted itself the channel overwrite either, so the guild
+ * level is the thing that actually decides whether the message goes out, and
+ * checking the overwrite it just wrote itself would always say yes.
+ */
+class FakeTextChannel {
+  constructor(guild, { id, name, parent, topic, permissionOverwrites = [] }) {
+    this.guild = guild;
+    this.id = id;
+    this.name = name;
+    this.topic = topic ?? null;
+    this.type = ChannelType.GuildText;
+    this.parentId = parent ?? null;
+    this.deleted = false;
+    this.renames = 0;
+    this.sent = 0;
+    this.edits = 0;
+
+    const store = new Collection();
+    let nextMessageId = 1;
+
+    this.permissionOverwrites = { cache: buildOverwriteCache(guild, permissionOverwrites) };
+
+    this.messages = {
+      cache: store,
+      fetch: async query => {
+        this.assertCan(PermissionFlagsBits.ReadMessageHistory);
+
+        if (typeof query === 'string') {
+          const message = store.get(query);
+          if (!message) throw new UnknownMessage();
+          return message;
+        }
+
+        const limit = query?.limit ?? 50;
+        // Newest first, the order Discord returns and the order the service
+        // relies on when it picks the bot's most recent message.
+        return new Collection([...store.entries()].reverse().slice(0, limit));
+      }
+    };
+
+    this.send = async payload => {
+      this.assertCan(PermissionFlagsBits.SendMessages);
+      if (payload?.embeds?.length) this.assertCan(PermissionFlagsBits.EmbedLinks);
+
+      const message = this.buildMessage(`${this.id}-msg-${nextMessageId++}`, payload);
+      store.set(message.id, message);
+      this.sent++;
+      return message;
+    };
+  }
+
+  /** One message, editable in place the way discord.js hands it back. */
+  buildMessage(id, payload) {
+    const channel = this;
+    const message = {
+      id,
+      channelId: this.id,
+      author: { id: this.guild.members.me.id },
+      content: payload?.content ?? '',
+      // Builders are serialized on the way out, so a test reads back the same
+      // plain data Discord would have stored.
+      embeds: (payload?.embeds ?? []).map(embed => (embed?.toJSON ? embed.toJSON() : embed)),
+      edit: async next => {
+        channel.assertCan(PermissionFlagsBits.SendMessages);
+        if (next?.embeds?.length) channel.assertCan(PermissionFlagsBits.EmbedLinks);
+        message.content = next?.content ?? message.content;
+        message.embeds = (next?.embeds ?? []).map(embed => (embed?.toJSON ? embed.toJSON() : embed));
+        channel.edits++;
+        return message;
+      },
+      delete: async () => {
+        channel.messages.cache.delete(id);
+      }
+    };
+    return message;
+  }
+
+  assertCan(flag) {
+    if (!this.guild.members.me.permissions.has(flag)) {
+      throw new MissingPermissions(`Bot lacks ${new PermissionsBitField(flag).toArray().join(', ')}`);
+    }
+  }
+
+  /** Whether a member can do something here, resolved through the overwrites. */
+  allows(member, flag) {
+    let bits = member.permissions.bitfield;
+    const category = this.parentId ? this.guild.channels.cache.get(this.parentId) : null;
+    if (category?.permissionOverwrites) {
+      bits = applyOverwrites(bits, category.permissionOverwrites.cache, member);
+    }
+    return new PermissionsBitField(applyOverwrites(bits, this.permissionOverwrites.cache, member)).has(flag);
+  }
+
+  async setName(name) {
+    this.name = name;
+    this.renames++;
+    return this;
+  }
+
+  async setParent(parentId) {
+    this.parentId = parentId;
+    return this;
+  }
+
+  async delete() {
+    if (this.failDelete) throw this.failDelete;
+    this.deleted = true;
+    this.guild.channels.cache.delete(this.id);
+  }
+}
+
 class FakeGuild {
   constructor(id, { botPermissions }) {
     this.id = id;
@@ -322,9 +452,12 @@ class FakeGuild {
   }
 
   addChannel(options) {
-    const channel = options.type === ChannelType.GuildCategory
-      ? new FakeCategoryChannel(this, options)
-      : new FakeVoiceChannel(this, options);
+    const Channel = {
+      [ChannelType.GuildCategory]: FakeCategoryChannel,
+      [ChannelType.GuildText]: FakeTextChannel
+    }[options.type] ?? FakeVoiceChannel;
+
+    const channel = new Channel(this, options);
     this.channels.cache.set(channel.id, channel);
     return channel;
   }
@@ -570,6 +703,15 @@ export class UnknownInvite extends Error {
     super('Unknown Invite');
     this.name = 'DiscordAPIError[10006]';
     this.code = 10006;
+  }
+}
+
+/** Discord's error for fetching a message that is no longer there. */
+export class UnknownMessage extends Error {
+  constructor() {
+    super('Unknown Message');
+    this.name = 'DiscordAPIError[10008]';
+    this.code = 10008;
   }
 }
 

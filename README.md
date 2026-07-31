@@ -15,6 +15,7 @@ Built on the [TSTemplateBot](https://github.com/PineFruitDev/TSTemplateBot) arch
 - **Ownership Handoff**: If the owner leaves while others are still talking, control passes to whoever has been in the room longest
 - **Automatic Cleanup**: When the last person leaves a room, the bot deletes it. Empty rooms left behind by a restart are swept on the next boot
 - **Permanent Meeting Link**: `/link` hands out one URL per server that drops people straight into a voice room, stable enough to paste into a recurring calendar invite instead of a Google Meet URL
+- **A How-It-Works Channel**: `/setup` posts a short read-only notice at the top of the category explaining the lounge to members, and keeps it up to date as the meeting link changes
 - **Moderator Role**: Point `/setup mod-role:@Role` at a role to give it full control over every temporary room, private ones included
 - **Multi-Server**: Fully per-guild. One instance serves any number of servers, each with its own lounge and its own moderator role
 - **No Privileged Intents**: Runs on the Guilds and Voice States intents, so there is nothing to toggle in the Developer Portal
@@ -34,6 +35,7 @@ The lounge looks like this:
 
 ```
 | VOICE LOUNGE |
+├── #how-it-works            read-only notice explaining the lounge
 ├── 👀﹕Drag Me to Private
 ├── ➕﹕🔒 New Private        joining this creates  🔒﹕Private #1
 └── ➕﹕🔓 New Public         joining this creates  🔓﹕Public #1
@@ -42,6 +44,7 @@ The lounge looks like this:
 | What | Name |
 |------|------|
 | Category | `\| VOICE LOUNGE \|` |
+| How-it-works channel | `how-it-works` |
 | Waiting room | `👀﹕Drag Me to Private` |
 | Private trigger | `➕﹕🔒 New Private` |
 | Public trigger | `➕﹕🔓 New Public` |
@@ -86,7 +89,7 @@ Two things worth knowing:
 | `/link admit:@user` | Manage Server | Give someone the guest role for a private meeting room |
 | `/link revoke:True` | Manage Server | Delete the meeting room, its role, and the link |
 | `/ping` | Anyone | Latency check |
-| `/help` | Anyone | List the commands |
+| `/help` | Anyone | List every command, its options, and what each option accepts |
 
 `/setup` is safe to run again. An existing lounge is reused and, if the names have changed, renamed in place, so nothing is duplicated. It recreates only what is actually missing, which is what makes it the fix for a deleted channel or a lost config file.
 
@@ -125,6 +128,18 @@ Either way `/link admit:@user` always works, and for a meeting you are inviting 
 **Changing the scope moves the URL.** An invite's roles are fixed when it is created, so flipping between public and private has to mint a new invite. `/link` says clearly when the URL has changed. Re-running `/link` with the same scope never changes it.
 
 **A prettier URL.** `https://discord.gg/xxxxxxx` is stable but not memorable. If you want `meet.example.com/standup`, put a redirect in front of it. That lives in whatever hosts your domain, not in this bot, and the only thing it needs from here is the invite code `/link` prints. The upside of doing it is that you could then re-issue the invite without touching what people already have in their calendars.
+
+### The how-it-works channel
+
+`/setup` puts a read-only text channel called `how-it-works` at the top of the lounge category and posts one short notice in it explaining the lounge to members. Discord sorts text channels above voice ones inside a category, so it sits where somebody scrolling past will actually see it.
+
+Members can read it and nothing else: `@everyone` is denied Send Messages, Add Reactions, and threads on that channel, so it stays a notice board rather than turning into a second general chat.
+
+There is only ever **one** message in it, and the bot owns it. Re-running `/setup` rewrites that message in place rather than posting another copy, and a run that would not change a word spends no edit at all. If the config file is lost, the bot finds the channel by name under the category and its own message inside it, so a self-heal repairs the notice instead of stacking a second one underneath.
+
+The notice mentions the meeting room only when `/link` has actually made one, and says whether the whole server can walk into it or an admin has to let you in. Changing the scope with `/link` rewrites that section, and `/link revoke:True` takes it out again. It deliberately does **not** print the invite URL: that URL is a server invite, and a channel every member can read is not the place to hand one out. `/link` gives it to admins, which is where it belongs.
+
+Writing it needs Send Messages, Embed Links, and Read Message History, all three of which were added to the invite integer for this. On a bot invited before that, `/setup` still builds the whole lounge and tells you what to re-invite with.
 
 ### What the room owner can do
 
@@ -205,13 +220,13 @@ No privileged intents are required.
 Invite it with the `bot` and `applications.commands` scopes and this permissions integer:
 
 ```
-288359441
+288443409
 ```
 
 Invite URL template (swap in your client ID):
 
 ```
-https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=288359441&scope=bot%20applications.commands
+https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=288443409&scope=bot%20applications.commands
 ```
 
 That number is the sum of the permissions the bot actually uses:
@@ -225,6 +240,9 @@ That number is the sum of the permissions the bot actually uses:
 | Connect | Required alongside Move Members to move members into voice |
 | Speak | So the owner and mod overwrites it grants are valid |
 | Create Invite | Mint the permanent invite behind `/link`. Only `/link` uses it; without it every other feature still works |
+| Send Messages | Post the how-it-works notice in the channel `/setup` creates |
+| Embed Links | Render that notice as an embed rather than a wall of text |
+| Read Message History | Find the notice it already posted, so re-running `/setup` edits it instead of posting a second copy |
 
 Place the bot's role high enough in **Server Settings > Roles** that it can manage the lounge channels.
 
@@ -309,7 +327,7 @@ When a move fails anyway, the bot logs the cause rather than failing quietly:
 
 ```
 [VoiceLoungeService] moveIntoChannel - Could not move Sky#0001 into "🔓﹕Public #1". The bot is
-missing these server permissions: Move Members. Re-invite it with permissions=288359441,
+missing these server permissions: Move Members. Re-invite it with permissions=288443409,
 or grant them to its role in Server Settings > Roles.
 ```
 
@@ -371,17 +389,21 @@ src/
 ├── core/
 │   ├── Bot.ts                  # Discord client, intents, interaction dispatch
 │   ├── Command.ts              # Abstract command base class
-│   └── CommandManager.ts       # Command registry lookups
+│   ├── CommandManager.ts       # Command registry lookups
+│   └── commandHelp.ts          # Renders /help out of the registration data itself
 ├── commands/
 │   ├── index.ts                # ← Command registry (single source of truth)
 │   ├── SetupCommand.ts         # /setup, including the moderator role
 │   ├── RemoveCommand.ts        # /remove, the confirmed teardown
+│   ├── LinkCommand.ts          # /link, the permanent meeting URL
 │   ├── PingCommand.ts          # /ping
-│   └── HelpCommand.ts          # /help
+│   └── HelpCommand.ts          # /help, generated from the registry
 ├── config/
 │   └── loungeNames.ts          # ← Every channel name, in one place
 ├── services/
 │   ├── VoiceLoungeService.ts   # ← Voice-state engine: create, move, transfer, delete, sweep
+│   ├── MeetingLinkService.ts   # The permanent room, its guest role, and its invite
+│   ├── LoungeGuideService.ts   # The read-only how-it-works channel and its one message
 │   ├── GuildConfigStore.ts     # Per-server JSON persistence
 │   ├── CommandRegistrar.ts     # Registers commands on boot, skipping an unchanged set
 │   ├── Environment.ts          # Config validation
@@ -394,6 +416,11 @@ test/
 ├── command-registration.test.js # Registering on boot: the hash skip and non-fatal failure
 ├── voice-lounge.test.js        # Join to create, move, teardown, and ownership handoff
 ├── naming.test.js              # Channel names, room numbering, and the /setup rename
+├── owner-permissions.test.js   # What a room owner ends up holding on their own room
+├── manage-permissions.test.js  # Creating a room without Manage Permissions, then adding it
+├── meeting-link.test.js        # /link: scope changes, admitting, and revoking
+├── lounge-guide.test.js        # The how-it-works channel: one message, kept in step
+├── help.test.js                # /help rendering itself out of the command registry
 └── remove.test.js              # /remove: confirmation, teardown, and what it refuses to touch
 ```
 
