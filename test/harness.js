@@ -222,6 +222,11 @@ class FakeVoiceChannel {
     this.permissionOverwrites = {
       cache,
       edit: async (target, flags) => {
+        // Set `failEdit` on a channel to make Discord refuse the write, which is
+        // what a rate limit or a mid-meeting permission change looks like from
+        // here. Same idiom as `failDelete`.
+        if (this.failEdit) throw this.failEdit;
+
         const id = typeof target === 'string' ? target : target.id;
         const bits = wanted => Object.entries(flags)
           .filter(([, on]) => on === wanted)
@@ -272,8 +277,7 @@ class FakeVoiceChannel {
    * What discord.js calls `permissionsFor`, which is what the service asks
    * before deciding somebody needs an overwrite of their own. Administrator
    * bypasses channel overwrites outright, so an admin can already see a hidden
-   * room and must not be given a grant that spends one of the channel's 100
-   * overwrite slots.
+   * room and must not be given a grant of their own on top of that.
    */
   permissionsFor(member) {
     if (member.permissions.has(PermissionFlagsBits.Administrator)) {

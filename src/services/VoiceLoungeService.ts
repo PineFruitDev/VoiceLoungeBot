@@ -95,17 +95,6 @@ export const GUEST_FLAGS = {
   Connect: true
 } as const;
 
-/**
- * Discord's hard ceiling on permission overwrites per channel.
- *
- * Hiding a room spends one overwrite per person in it, on top of @everyone, the
- * owner, the mod role, and the bot. Access is revoked when somebody leaves, so
- * the count tracks who is in the room right now rather than everyone who has
- * ever passed through, which puts the ceiling out of reach of any room that is
- * not close to the 99-person cap on a voice channel. Out of reach is not the
- * same as unreachable, and the room stays hidden when it is hit: see admit.
- */
-const OVERWRITE_LIMIT = 100;
 
 /**
  * The permissions the bot is invited with, as documented in the README. The
@@ -277,6 +266,18 @@ export class VoiceLoungeService {
   /**
    * Create a temporary voice channel for the joining member, grant them control,
    * and move them into it.
+   *
+   * **Overwrites before the move, and that order is load bearing.** The owner's
+   * View and Connect grants ride in the create payload, so they are already on
+   * the channel before anybody is moved into it. The two failures are not
+   * symmetrical: an overwrite written to a room nobody reaches is inert and gets
+   * deleted with the room, while a move into a hidden room with no overwrite
+   * leaves somebody connected to a channel they cannot see, which throws no
+   * error and looks like the bot working. Do not reorder these.
+   *
+   * The Manage Permissions grant below is deliberately the exception and does
+   * not break the rule: it is a convenience for the owner rather than the thing
+   * that gets them into the room, so it can wait until they are safely in.
    */
   private async createTempChannel(state: VoiceState, config: GuildConfig, isPrivate: boolean): Promise<void> {
     const member = state.member;
@@ -603,7 +604,16 @@ export class VoiceLoungeService {
    *
    * Public rooms are left alone: there is nothing to grant when nothing was
    * taken away, and writing an overwrite per occupant on a busy public room
-   * would spend the channel's overwrite budget for no reason.
+   * would be a write per join for no reason.
+   *
+   * There is deliberately no ceiling check here. Discord allows 1000 permission
+   * overwrites per channel, which is the number error 30060 reports, and a voice
+   * channel holds at most 99 people. A room where every occupant needed a grant
+   * would carry about 102 counting @everyone, the owner, the mod role, and the
+   * bot, so the ceiling sits an order of magnitude out of reach and cannot bind
+   * in practice. A guard on it would be a branch that never runs, and the only
+   * thing it could ever do is refuse somebody from a full room that Discord
+   * would have been perfectly happy to admit.
    *
    * Returns whether the member can see the room afterwards, which is true when
    * the call had nothing to do as well as when it worked.
@@ -614,14 +624,9 @@ export class VoiceLoungeService {
 
     // Already covered: the owner by the overwrite the room was built with, a
     // moderator by the mod role's, an administrator by bypassing overwrites
-    // altogether. Skipping them is not only a saved API call, it is what keeps
-    // the overwrite count tracking guests rather than everyone who walks in.
+    // altogether. Skipping them is not only a saved API call, it also keeps a
+    // room's overwrites describing its guests rather than everyone who walks in.
     if (channel.permissionsFor(member)?.has(PermissionFlagsBits.ViewChannel)) return true;
-
-    if (channel.permissionOverwrites.cache.size >= OVERWRITE_LIMIT) {
-      await this.reportAdmitLimit(channel, member);
-      return false;
-    }
 
     try {
       // The type is stated rather than left to be inferred, for the reason set
@@ -633,7 +638,7 @@ export class VoiceLoungeService {
       await channel.permissionOverwrites.edit(member.id, GUEST_FLAGS, { type: OverwriteType.Member });
       return true;
     } catch (error) {
-      this.logger.warn(`admit - Could not give ${member.user.tag} access to private room ${channel.id}:`, error);
+      await this.reportAdmitFailure(channel, member, error);
       return false;
     }
   }
@@ -641,30 +646,36 @@ export class VoiceLoungeService {
   /**
    * Say, in the room itself, that somebody could not be let in.
    *
-   * The room stays hidden. Lifting the @everyone deny would let this one member
-   * see the room, and would show it to the whole server at the same time, which
-   * is the exact thing the room was created to avoid. A room at the limit stays
-   * shut rather than quietly turning public.
+   * This hangs off the failed write rather than off a count, because the write
+   * failing is the reachable version of this problem. A rate limit, the bot's
+   * role being moved down the list mid-meeting, or an override appearing on the
+   * category can all refuse it, and the consequence is the same whatever the
+   * cause: somebody is connected to a room that is not in their channel list and
+   * will not see anything posted in it.
+   *
+   * The room stays hidden either way. Lifting the @everyone deny would let this
+   * one member see the room and show it to the whole server at the same time,
+   * which is the exact thing the room was created to avoid.
    *
    * The notice goes to the room's own text chat because that is where the people
    * who can act on it already are. It cannot reach the member it is about, who
    * by definition cannot see the channel, and saying so is the point: somebody
    * in the room has to notice and tell them.
    */
-  private async reportAdmitLimit(channel: VoiceChannel, member: GuildMember): Promise<void> {
+  private async reportAdmitFailure(channel: VoiceChannel, member: GuildMember, error: unknown): Promise<void> {
     this.logger.warn(
-      `admit - Room ${channel.id} holds Discord's maximum of ${OVERWRITE_LIMIT} permission entries, so ` +
-      `${member.user.tag} was not given access. They are connected but the room is not in their channel list.`
+      `admit - Could not give ${member.user.tag} access to private room ${channel.id}. They are connected ` +
+      'but the room is not in their channel list.',
+      error
     );
 
     try {
       await channel.send(
-        `⚠️ Could not give <@${member.id}> access to this room. Discord allows ${OVERWRITE_LIMIT} permission ` +
-        'entries per channel and this room is at that limit, so it stays hidden from them even though they are ' +
-        'connected. They will not see anything posted here. One person leaving frees an entry up.'
+        `⚠️ Could not give <@${member.id}> access to this room. They are connected, but it is not in their ` +
+        'channel list and they will not see anything posted here. Moving them out and back in will try again.'
       );
-    } catch (error) {
-      this.logger.warn(`reportAdmitLimit - Could not post the limit notice in ${channel.id}:`, error);
+    } catch (sendError) {
+      this.logger.warn(`reportAdmitFailure - Could not post the notice in ${channel.id}:`, sendError);
     }
   }
 

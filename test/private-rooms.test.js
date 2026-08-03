@@ -128,8 +128,8 @@ test('being dragged into a private room grants access, and leaving takes it back
   );
 });
 
-// Granting an overwrite per occupant on a public room would spend the channel's
-// budget of 100 for nothing, since nothing was taken away from them.
+// Granting an overwrite per occupant on a public room would be a write per join
+// for nothing, since nothing was taken away from them in the first place.
 test('joining a public room writes no overwrite at all', async () => {
   const ctx = await setup();
   const room = await spawnRoom(ctx, 'user-1', false);
@@ -295,33 +295,51 @@ test('an owner leaving a room that others are still in does not double-delete', 
   );
 });
 
-// A room at Discord's ceiling stays hidden. Dropping the @everyone deny would
-// let this one member in and show the room to the entire server at the same
-// time, which is the exact thing the room was made to avoid.
-test('a room at the overwrite limit stays hidden and says so in the room', async () => {
+// Discord allows 1000 overwrites per channel (error 30060) and a voice channel
+// holds at most 99 people, so the ceiling cannot bind. An earlier cut of this
+// feature guarded at 100 and would have started refusing guests from a busy room
+// that Discord was perfectly happy to admit. There is no guard now, and this
+// pins that: a room well past 100 overwrites still lets people in.
+test('a busy room keeps admitting guests rather than inventing a ceiling', async () => {
   const ctx = await setup();
   const room = await spawnRoom(ctx, 'user-1', true);
 
-  while (room.channel.permissionOverwrites.cache.size < 100) {
+  while (room.channel.permissionOverwrites.cache.size < 120) {
     const filler = `filler-${room.channel.permissionOverwrites.cache.size}`;
     await room.channel.permissionOverwrites.edit(filler, { ViewChannel: true });
   }
 
   const guest = await dragInto(ctx, room.channel, 'user-late');
 
-  assert.equal(room.channel.permissionOverwrites.cache.has(guest.id), false, 'there is no room for the grant');
+  assert.ok(
+    room.channel.permissionOverwrites.cache.get(guest.id)?.allow.has(ViewChannel),
+    'a room past 100 overwrites is nowhere near Discord\'s limit of 1000'
+  );
+  assert.equal(room.channel.sent.length, 0, 'and nothing should be reported, because nothing went wrong');
+});
+
+// The reachable version of a failed grant: the write itself is refused, by a
+// rate limit or a permission change rather than by any ceiling. Whatever the
+// cause, somebody is connected to a room they cannot see, and the room stays
+// hidden rather than being opened to the whole server to fix one person.
+test('a refused grant leaves the room hidden and says so in the room', async () => {
+  const ctx = await setup();
+  const room = await spawnRoom(ctx, 'user-1', true);
+
+  room.channel.failEdit = new Error('Missing Permissions');
+  const guest = await dragInto(ctx, room.channel, 'user-late');
+
+  assert.equal(room.channel.permissionOverwrites.cache.has(guest.id), false, 'the grant did not land');
   assert.equal(
     room.channel.permissionOverwrites.cache.get(EVERYONE_ID).deny.has(ViewChannel),
     true,
-    'and the room must not quietly become visible to the whole server to make space'
+    'and the room must not quietly become visible to the whole server to compensate'
   );
+  assert.equal(room.channel.members.has(guest.id), true, 'the member is still connected, which is the problem');
 
   assert.equal(room.channel.sent.length, 1, 'the people in the room should be told');
   assert.match(room.channel.sent[0], /<@user-late>/, 'and told who it was about');
-  assert.ok(
-    logs.text().includes('permission entries'),
-    'and it should be in the log for an operator'
-  );
+  assert.ok(logs.text().includes('admit -'), 'and it should be in the log for an operator');
 });
 
 test('the sweep still finds and deletes a hidden room after a restart', async () => {
