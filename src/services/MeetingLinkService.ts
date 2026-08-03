@@ -308,10 +308,16 @@ export class MeetingLinkService {
   /**
    * Who can get into the meeting room.
    *
-   * A private room follows the same shape as a private temp room: everyone can
-   * see it so the link lands somewhere recognisable, and only the guest role can
-   * connect. Every entry states its type, for the reason set out on the temp
-   * room builder: this bot has no GuildMembers intent, so leaving discord.js to
+   * A private meeting room stays visible and denies Connect to everyone but the
+   * guest role. That is deliberately not the shape a private temp room uses,
+   * which is hidden outright: a temp room is one you were pulled into and
+   * nobody else has any business knowing about, where a meeting room's whole
+   * job is to be the fixed place a link points at, so somebody holding that
+   * link has to see it sitting there and understand they need access rather
+   * than follow a URL into what looks like an empty server.
+   *
+   * Every entry states its type, for the reason set out on the temp room
+   * builder: this bot has no GuildMembers intent, so leaving discord.js to
    * infer it can fail the whole call.
    */
   private buildTargets(

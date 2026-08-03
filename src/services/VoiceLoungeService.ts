@@ -624,7 +624,13 @@ export class VoiceLoungeService {
     }
 
     try {
-      await channel.permissionOverwrites.edit(member.id, GUEST_FLAGS);
+      // The type is stated rather than left to be inferred, for the reason set
+      // out on buildOverwrites: this bot has no GuildMembers intent, so
+      // discord.js works member from role out of a cache that only holds
+      // whoever the gateway has mentioned. A guest has just come past on a
+      // voice event so the lookup should land, but "should" is doing work there
+      // that one argument removes.
+      await channel.permissionOverwrites.edit(member.id, GUEST_FLAGS, { type: OverwriteType.Member });
       return true;
     } catch (error) {
       this.logger.warn(`admit - Could not give ${member.user.tag} access to private room ${channel.id}:`, error);
