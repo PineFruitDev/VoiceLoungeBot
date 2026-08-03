@@ -247,8 +247,10 @@ export class LoungeGuideService {
         {
           name: 'Make it private',
           value:
-            `Join <#${config.newPrivateId}> instead. Everyone can see your room, nobody else can get in. ` +
-            `To let someone in, have them join <#${config.waitingRoomId}> and drag them across.`
+            `Join <#${config.newPrivateId}> instead. Your room is hidden: nobody else can see it in the ` +
+            `channel list, let alone get in. To let someone in, have them join <#${config.waitingRoomId}> ` +
+            'and drag them across. The room appears for them once they are in it, and disappears again ' +
+            'when they leave.'
         },
         {
           name: 'Rooms do not stick around',

@@ -110,15 +110,41 @@ class Overwrite {
 
 /**
  * Layer one channel's overwrites onto a member's permissions the way Discord
- * does: deny first, then allow, @everyone before the member's own overwrite.
+ * does: @everyone first, then the member's roles, then the member's own
+ * overwrite, with deny applied before allow at each step.
+ *
+ * The role tier matters to private rooms. A moderator sees into a hidden room
+ * through the mod role's overwrite and not one of their own, so a model that
+ * skipped roles would say a moderator cannot see the room, and the service
+ * would be tested against a permission resolution Discord does not perform.
+ *
+ * Every role overwrite is accumulated before either side is applied, which is
+ * also Discord's rule: a grant on one role is not undone by a deny on another.
  */
 function applyOverwrites(bits, cache, member) {
-  for (const id of [EVERYONE_ID, member.id]) {
-    const overwrite = cache.get(id);
-    if (!overwrite) continue;
-    bits &= ~overwrite.deny.bitfield;
-    bits |= overwrite.allow.bitfield;
+  const everyone = cache.get(EVERYONE_ID);
+  if (everyone) {
+    bits &= ~everyone.deny.bitfield;
+    bits |= everyone.allow.bitfield;
   }
+
+  let roleDeny = 0n;
+  let roleAllow = 0n;
+  for (const roleId of member.roles?.cache?.keys() ?? []) {
+    const overwrite = cache.get(roleId);
+    if (!overwrite) continue;
+    roleDeny |= overwrite.deny.bitfield;
+    roleAllow |= overwrite.allow.bitfield;
+  }
+  bits &= ~roleDeny;
+  bits |= roleAllow;
+
+  const own = cache.get(member.id);
+  if (own) {
+    bits &= ~own.deny.bitfield;
+    bits |= own.allow.bitfield;
+  }
+
   return bits;
 }
 
@@ -188,6 +214,8 @@ class FakeVoiceChannel {
     this.members = new Map();
     this.deleted = false;
     this.renames = 0;
+    /** What the bot has posted to this room's text chat. */
+    this.sent = [];
 
     const cache = buildOverwriteCache(guild, permissionOverwrites);
 
@@ -238,6 +266,38 @@ class FakeVoiceChannel {
         throw new MissingPermissions(`Bot cannot grant ${new PermissionsBitField(flag).toArray().join(', ')} here`);
       }
     }
+  }
+
+  /**
+   * What discord.js calls `permissionsFor`, which is what the service asks
+   * before deciding somebody needs an overwrite of their own. Administrator
+   * bypasses channel overwrites outright, so an admin can already see a hidden
+   * room and must not be given a grant that spends one of the channel's 100
+   * overwrite slots.
+   */
+  permissionsFor(member) {
+    if (member.permissions.has(PermissionFlagsBits.Administrator)) {
+      return bitfield([PermissionFlagsBits.Administrator]).add(member.permissions.bitfield);
+    }
+    return this.effectivePermissions(member);
+  }
+
+  /**
+   * The text chat every voice channel carries. The bot posts here to say it
+   * could not let somebody in, so the notice reaches the people in the room.
+   *
+   * Like the text channel's own `send`, this checks the bot's guild-wide
+   * permission rather than the resolved channel one, because a bot never
+   * invited with Send Messages could not have written itself the overwrite
+   * either.
+   */
+  async send(payload) {
+    if (!this.guild.members.me.permissions.has(PermissionFlagsBits.SendMessages)) {
+      throw new MissingPermissions('Bot cannot send messages in this guild');
+    }
+    const content = typeof payload === 'string' ? payload : payload?.content ?? '';
+    this.sent.push(content);
+    return { id: `${this.id}-msg-${this.sent.length}`, content };
   }
 
   /** Guild permissions, then the category's overwrites, then this channel's. */

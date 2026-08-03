@@ -7,7 +7,7 @@ Built on the [TSTemplateBot](https://github.com/PineFruitDev/TSTemplateBot) arch
 ## Features
 
 - **Join to Create**: Join **New Public** or **New Private** and the bot builds a fresh voice channel and drops you into it
-- **Public and Private Rooms**: Public rooms anyone can join; private rooms everyone can see but only the owner and the people they pull in can enter
+- **Public and Private Rooms**: Public rooms anyone can join; private rooms are hidden outright, absent from the channel list of everyone except the owner, the people they pull in, moderators, and admins
 - **Tidy Numbering**: Rooms are numbered per type and reuse the lowest free number, so the list stays compact instead of drifting up forever
 - **Renameable Everything**: Every channel name lives in one small module, and `/setup` renames an existing lounge in place when you change it
 - **Drag Me to Private Waiting Room**: A lobby where people wait to be dragged into a private room, set up with the permissions that let owners do the dragging
@@ -109,7 +109,9 @@ The invite itself is created with no expiry and no use limit, and re-running `/l
 
 **Public.** Anyone who follows the link can join the room. Members of the server walk in; people who are not in the server yet join the server and land there. No roles involved.
 
-**Private.** The room is visible to everyone but only the **Meeting Room Guest** role can connect, the same shape the lounge's private rooms use. The role is created with **no permissions at all**, so it grants nothing anywhere except the meeting room, and a copy left behind by a failed teardown is harmless.
+**Private.** The room is visible to everyone but only the **Meeting Room Guest** role can connect. The role is created with **no permissions at all**, so it grants nothing anywhere except the meeting room, and a copy left behind by a failed teardown is harmless.
+
+This is deliberately not the shape a private lounge room uses. A lounge room is hidden, because it is a room you were pulled into and nobody else has any business knowing about. A meeting room is the opposite: its whole job is to be the fixed place a link points at, so somebody holding that link needs to see it sitting there and understand they need access, rather than follow a URL into what looks like an empty server.
 
 Two things get people that role:
 
@@ -158,6 +160,8 @@ Right click the room, **Edit Channel**, and an owner can:
 | Delete the room early | Manage Channel |
 
 **Manage Permissions is what makes a private room usable.** Without it Discord greys out the Permissions tab, and the owner of a private room can only pull people in by dragging them from the waiting room, with no way to simply grant someone access. It is the permission Discord calls `MANAGE_ROLES` in its API.
+
+**Granting access to a private room by hand takes two permissions, not one.** A private room is hidden by denying **View Channel** to `@everyone`, so adding somebody in the Permissions tab and ticking only **Connect** leaves them unable to see the room they can now technically join. Tick **View Channel** as well. Dragging somebody in from the waiting room does not have this problem: the bot grants both the moment they arrive, and takes both back when they leave.
 
 It is also the one thing on this list a server can withhold. Discord will not let a bot put Manage Permissions into an overwrite while creating a channel unless the bot is a full administrator, so the bot creates the room first and adds Manage Permissions on a second call, where the rule is the ordinary one about only granting what you hold. If that second call is refused, the room is still created and everything else in the table above still works. The bot logs it once per server and `/setup` says so too, naming what to change. Nothing about a missing Manage Permissions can stop rooms from being created.
 

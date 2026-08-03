@@ -17,7 +17,7 @@ VoiceLoungeBot turns one hub into unlimited voice channels. Instead of a wall of
 Run /setup once and the bot builds a VOICE LOUNGE category with three channels everyone can see and join:
 
 - New Public: join it to spawn a public room anyone can enter.
-- New Private: join it to spawn a private room that everyone can see but only you and the people you pull in can join.
+- New Private: join it to spawn a hidden room. It does not show up in the channel list for anyone but you and the people you pull in.
 - Drag Me to Private: a waiting room where people sit so a room owner can drag them into a private room.
 
 Rooms are numbered per type and reuse the lowest free number, so the channel list stays tidy instead of climbing forever. Every name is configurable in one file, and /setup renames an existing lounge in place when you change one.

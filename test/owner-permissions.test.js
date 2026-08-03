@@ -146,8 +146,13 @@ test('a private room stays private to everyone but its owner', async () => {
 
   const everyone = room.channel.permissionOverwrites.cache.get(EVERYONE_ID);
   assert.equal(everyone.type, OverwriteType.Role);
-  assert.ok(everyone.allow.has(PermissionFlagsBits.ViewChannel), 'a private room is visible');
-  assert.ok(everyone.deny.has(PermissionFlagsBits.Connect), 'but not joinable');
+  assert.ok(everyone.deny.has(PermissionFlagsBits.ViewChannel), 'a private room is hidden');
+  assert.ok(everyone.deny.has(PermissionFlagsBits.Connect), 'and not joinable');
+
+  // The same permission in both halves of an overwrite is a contradiction
+  // Discord resolves by applying the deny first, so a leftover allow would be
+  // harmless but would mean the code no longer says what it means.
+  assert.equal(everyone.allow.has(PermissionFlagsBits.ViewChannel), false, 'not granted and denied at once');
 
   // Handing the owner control must not have leaked anything to everyone else.
   for (const flag of [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles, PermissionFlagsBits.MoveMembers]) {
