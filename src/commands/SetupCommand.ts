@@ -18,6 +18,7 @@ import {
   REQUIRED_PERMISSION_INTEGER
 } from '../services/VoiceLoungeService.js';
 import { LoungeGuideService, GuideResult } from '../services/LoungeGuideService.js';
+import { LegacyMeetingRoomCleanup, describeCleanup } from '../services/LegacyMeetingRoomCleanup.js';
 import { Logger } from '../services/Logger.js';
 import {
   CATEGORY_NAME,
@@ -155,11 +156,23 @@ export class SetupCommand extends Command {
 
     const modLine = await this.applyModRole(guild, store, existing?.modRoleId, requestedModRole?.id, clearModRole);
 
+    // Take away what the removed `/link` feature left behind, if this server
+    // ever ran it. Here, and not on boot, because deleting a channel is
+    // irreversible and visible to everyone in the guild: it belongs to an admin
+    // deliberately reshaping their lounge, not to a restart. The orphan sweep
+    // keeps skipping the old room until this has run.
+    const cleanup = await new LegacyMeetingRoomCleanup().run(guild, store);
+
     // Last, and against the config as it now stands, so the notice is written
     // from settled state rather than from a config still being changed under
     // it. The guide says nothing about the moderator role today, but ordering
     // it this way means it still would not have to if it ever did.
+    // After the cleanup, so the notice is written against a config that no
+    // longer mentions a room this command has just deleted.
     const guide = await new LoungeGuideService().ensureGuide(guild, store, store.getGuild(guild.id)!);
+
+    const cleanupDescription = describeCleanup(cleanup);
+    const cleanupLine = cleanupDescription ? `\n\n${cleanupDescription}` : '';
 
     const renamed = [category, waitingRoom, newPublic, newPrivate].filter(result => result.action === 'renamed');
     const renameLine = renamed.length > 0
@@ -176,6 +189,7 @@ export class SetupCommand extends Command {
       this.guideLine(guide) +
       modLine +
       renameLine +
+      cleanupLine +
       this.managePermissionsWarning(guild, category.channel.id)
     );
   }

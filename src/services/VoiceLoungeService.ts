@@ -15,8 +15,8 @@ import { GuildConfigStore, GuildConfig } from './GuildConfigStore.js';
 import {
   tempRoomName,
   parseRoomIndex,
-  LINK_ROOM_NAME,
-  LEGACY_LINK_ROOM_NAMES
+  LEGACY_MEETING_ROOM_NAME,
+  LEGACY_MEETING_ROOM_NAMES
 } from '../config/loungeNames.js';
 
 /**
@@ -637,18 +637,21 @@ export class VoiceLoungeService {
       // Candidate temp channels: persisted records plus anything parked in the
       // lounge category that is not one of the three hub channels.
       //
-      // The meeting room is excluded and the exclusion is load bearing. It sits
-      // under the same category and is empty between meetings, which is exactly
-      // the shape of an orphan, so without this the first restart after `/link`
-      // would delete it, take the invite down with it, and turn a URL already
-      // sitting in somebody's recurring calendar invite into a dead link.
+      // A leftover meeting room is excluded, and the exclusion outlives the
+      // feature that needed it. `/link` is gone and nothing creates one any
+      // more, but every server that ran it still has the channel sitting here,
+      // empty, which is exactly the shape of an orphan. Dropping this line
+      // would make the next restart delete a channel in every one of those
+      // servers without anybody asking, which is not a decision a reboot gets
+      // to make. LegacyMeetingRoomCleanup removes it when an admin runs
+      // `/setup` or `/remove`, and this can go once no install has one left.
       const candidateIds = new Set<string>(Object.keys(config.tempChannels));
       for (const channel of guild.channels.cache.values()) {
         if (
           channel.type === ChannelType.GuildVoice &&
           channel.parentId === config.categoryId &&
           !this.store.isHubChannel(guildId, channel.id) &&
-          !this.isMeetingRoom(guildId, channel.id, channel.name)
+          !this.isLegacyMeetingRoom(guildId, channel.id, channel.name)
         ) {
           candidateIds.add(channel.id);
         }
@@ -708,22 +711,19 @@ export class VoiceLoungeService {
   }
 
   /**
-   * Whether a channel is the permanent `/link` meeting room, by ID or by name.
+   * Whether a channel is a leftover meeting room from the removed `/link`.
    *
    * The name check is not belt and braces, it closes a hole the ID check cannot
-   * reach. Lose `guilds.json` and the link record goes with it, so the ID says
-   * no about a room that is still sitting in the category with a live invite
-   * pointing at it. The sweep runs on boot, before anyone can run `/link` to
-   * repair the record, so an ID-only check would delete the room during exactly
-   * the recovery that is supposed to save it. Matching by name is the same
-   * idiom `/setup` uses to turn a lost config into a repair rather than a
-   * second lounge.
+   * reach. Lose `guilds.json` and the record goes with it, so the ID says no
+   * about a room that is still sitting in the category. An ID-only check would
+   * then let the sweep delete it on the next boot, which is the one outcome
+   * this guard exists to prevent.
    */
-  private isMeetingRoom(guildId: string, channelId: string, name: string): boolean {
+  private isLegacyMeetingRoom(guildId: string, channelId: string, name: string): boolean {
     return (
-      this.store.isLinkChannel(guildId, channelId) ||
-      name === LINK_ROOM_NAME ||
-      LEGACY_LINK_ROOM_NAMES.includes(name)
+      this.store.isLegacyMeetingRoom(guildId, channelId) ||
+      name === LEGACY_MEETING_ROOM_NAME ||
+      LEGACY_MEETING_ROOM_NAMES.includes(name)
     );
   }
 

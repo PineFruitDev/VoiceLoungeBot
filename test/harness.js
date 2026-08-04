@@ -411,8 +411,8 @@ class FakeGuild {
     };
     this.roles = {
       everyone: { id: EVERYONE_ID },
-      // A Collection rather than a Map: MeetingLinkService looks a role up by
-      // name with cache.find when the stored ID has been lost.
+      // A Collection rather than a Map: the meeting room cleanup looks a role
+      // up by name with cache.find when the stored ID has been lost.
       cache: new Collection(),
       create: async options => this.addRole(`role-${this.nextRoleId}`, options)
     };
@@ -656,55 +656,6 @@ export async function createLounge(client, store, guildId) {
   return lounge;
 }
 
-/**
- * A stand-in for Discord's two invite endpoints.
- *
- * `grantsRoles` is the knob that matters. Discord accepts `role_ids` on an
- * invite and does not always act on it, and the only signal the bot gets is
- * whether the field comes back in the response, so this fake can echo it or
- * swallow it and the command has to cope with both.
- */
-export function createInviteApi({ grantsRoles = true } = {}) {
-  const invites = [];
-  let nextCode = 1;
-
-  return {
-    invites,
-    /** Drop an invite the way an admin revoking it in the client would. */
-    expire: code => {
-      const index = invites.findIndex(invite => invite.code === code);
-      if (index >= 0) invites.splice(index, 1);
-    },
-    list: async channelId => invites.filter(invite => invite.channelId === channelId),
-    create: async (channelId, body) => {
-      // Discord echoes the invite's own settings back at the top level, which is
-      // how a permanent invite is told apart from a 24 hour one on a later read.
-      const invite = {
-        code: `code-${nextCode++}`,
-        channelId,
-        max_age: body.max_age,
-        max_uses: body.max_uses,
-        ...(grantsRoles && body.role_ids ? { role_ids: body.role_ids } : {})
-      };
-      invites.push(invite);
-      return invite;
-    },
-    remove: async code => {
-      const index = invites.findIndex(invite => invite.code === code);
-      if (index < 0) throw new UnknownInvite();
-      invites.splice(index, 1);
-    }
-  };
-}
-
-/** Discord's error for acting on an invite that is no longer there. */
-export class UnknownInvite extends Error {
-  constructor() {
-    super('Unknown Invite');
-    this.name = 'DiscordAPIError[10006]';
-    this.code = 10006;
-  }
-}
 
 /** Discord's error for fetching a message that is no longer there. */
 export class UnknownMessage extends Error {

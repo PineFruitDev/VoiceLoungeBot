@@ -14,12 +14,21 @@ Built on the [TSTemplateBot](https://github.com/PineFruitDev/TSTemplateBot) arch
 - **Owner Controls**: Whoever creates a room gets Manage Channel and Manage Permissions on it, so they can rename it, set a user limit, decide who gets in, and drag people over from the waiting room
 - **Ownership Handoff**: If the owner leaves while others are still talking, control passes to whoever has been in the room longest
 - **Automatic Cleanup**: When the last person leaves a room, the bot deletes it. Empty rooms left behind by a restart are swept on the next boot
-- **Permanent Meeting Link**: `/link` hands out one URL per server that drops people straight into a voice room, stable enough to paste into a recurring calendar invite instead of a Google Meet URL
-- **A How-It-Works Channel**: `/setup` posts a short read-only notice at the top of the category explaining the lounge to members, and keeps it up to date as the meeting link changes
+- **A How-It-Works Channel**: `/setup` posts a short read-only notice at the top of the category explaining the lounge to members, and keeps it up to date as the lounge changes
 - **Moderator Role**: Point `/setup mod-role:@Role` at a role to give it full control over every temporary room, private ones included
 - **Multi-Server**: Fully per-guild. One instance serves any number of servers, each with its own lounge and its own moderator role
 - **No Privileged Intents**: Runs on the Guilds and Voice States intents, so there is nothing to toggle in the Developer Portal
 - **Production Ready**: Environment validation, contextual logging, and a restart-safe design
+
+> **The permanent Meeting Room has been removed.** `/link` used to give a server
+> one never-deleted room with a fixed invite pointing at it. Meetings are moving
+> to per-link temporary rooms that spawn on demand and are deleted when they
+> empty, so nothing creates a Meeting Room any more.
+>
+> A server that ran `/link` still has the channel, and a private one also has a
+> `Meeting Room Guest` role. **Run `/setup` to remove both.** Nothing is deleted
+> automatically: a restart only reports what it found, because deleting a
+> channel is irreversible and visible to everyone in the server.
 
 ## How It Works
 
@@ -50,8 +59,8 @@ The lounge looks like this:
 | Public trigger | `➕﹕🔓 New Public` |
 | Private room | `🔒﹕Private #1`, `🔒﹕Private #2`, ... |
 | Public room | `🔓﹕Public #1`, `🔓﹕Public #2`, ... |
-| Meeting room (`/link`) | `🔗﹕Meeting Room` |
-| Meeting guest role (`/link`) | `Meeting Room Guest` |
+| Old meeting room (removed) | `🔗﹕Meeting Room` |
+| Old meeting guest role (removed) | `Meeting Room Guest` |
 
 The character between the emoji and the words is **U+FE55 SMALL COLON** (`﹕`), not an ASCII colon. It sits tighter against the emoji in Discord's channel list, and unlike `:` it cannot be mistaken for the start of an emoji shortcode. A test pins the code point, so an editor that normalises it to `:` fails the build instead of quietly renaming every channel in every server on the next `/setup`.
 
@@ -83,51 +92,10 @@ Two things worth knowing:
 | `/setup mod-role:@Role` | Manage Server | Same, and give a role full control over every temporary room, private ones included |
 | `/setup clear-mod-role:True` | Manage Server | Same, and take moderator control back off whichever role has it |
 | `/remove` | Manage Server | Delete the lounge from this server and clear its config, after you confirm |
-| `/link` | Manage Server | Show this server's permanent meeting link |
-| `/link scope:public` | Manage Server | Create that link, or open it to the whole server |
-| `/link scope:private` | Manage Server | Create it gated behind a guest role instead |
-| `/link admit:@user` | Manage Server | Give someone the guest role for a private meeting room |
-| `/link revoke:True` | Manage Server | Delete the meeting room, its role, and the link |
 | `/ping` | Anyone | Latency check |
 | `/help` | Anyone | List every command, its options, and what each option accepts |
 
 `/setup` is safe to run again. An existing lounge is reused and, if the names have changed, renamed in place, so nothing is duplicated. It recreates only what is actually missing, which is what makes it the fix for a deleted channel or a lost config file.
-
-### A permanent meeting link
-
-`/link` gives the server one URL that never moves, so it can go in a recurring calendar invite where a Google Meet URL would otherwise sit. Follow it and you land in a voice room.
-
-```
-/link scope:public     ->  https://discord.gg/xxxxxxx
-```
-
-That URL keeps working next week and next year. Getting there takes one decision worth understanding.
-
-**Why the meeting room is permanent.** A Discord invite dies with the channel it points at. The lounge's numbered rooms are deleted the moment they empty, so an invite bound to one would be dead by the next morning. `/link` therefore keeps a room of its own, `🔗﹕Meeting Room`, which sits in the lounge category and is explicitly excluded from the cleanup sweep. It is empty between meetings and stays there. That exclusion is the single thing holding the feature up: without it the first restart would delete the room and turn the URL in your calendar into a dead link.
-
-The invite itself is created with no expiry and no use limit, and re-running `/link` checks with Discord that the stored invite is still live and reuses it rather than minting a new one. Nothing but a scope change moves the URL.
-
-**Public.** Anyone who follows the link can join the room. Members of the server walk in; people who are not in the server yet join the server and land there. No roles involved.
-
-**Private.** The room is visible to everyone but only the **Meeting Room Guest** role can connect, the same shape the lounge's private rooms use. The role is created with **no permissions at all**, so it grants nothing anywhere except the meeting room, and a copy left behind by a failed teardown is harmless.
-
-Two things get people that role:
-
-| Who | How |
-|-----|-----|
-| Someone already in the server | `/link admit:@user` |
-| Someone joining the server through the link | Discord's `role_ids`, if it takes |
-
-The second one is worth being blunt about. Discord's invite API accepts a `role_ids` field that is supposed to hand out roles to whoever accepts the invite, but it only ever concerns *accepting an invite*, so it cannot help anyone who is already a member however they arrive, and it has been reported to be accepted and then silently ignored. So the bot reads Discord's response back and tells you which of the two you got:
-
-- If Discord echoed the role, `/link` says so, and new arrivals should get it on the way in.
-- If it did not, `/link` says that instead and points you at `/link admit`.
-
-Either way `/link admit:@user` always works, and for a meeting you are inviting named people to, admitting them ahead of time is the reliable move.
-
-**Changing the scope moves the URL.** An invite's roles are fixed when it is created, so flipping between public and private has to mint a new invite. `/link` says clearly when the URL has changed. Re-running `/link` with the same scope never changes it.
-
-**A prettier URL.** `https://discord.gg/xxxxxxx` is stable but not memorable. If you want `meet.example.com/standup`, put a redirect in front of it. That lives in whatever hosts your domain, not in this bot, and the only thing it needs from here is the invite code `/link` prints. The upside of doing it is that you could then re-issue the invite without touching what people already have in their calendars.
 
 ### The how-it-works channel
 
@@ -137,7 +105,7 @@ Members can read it and nothing else: `@everyone` is denied Send Messages, Add R
 
 There is only ever **one** message in it, and the bot owns it. Re-running `/setup` rewrites that message in place rather than posting another copy, and a run that would not change a word spends no edit at all. If the config file is lost, the bot finds the channel by name under the category and its own message inside it, so a self-heal repairs the notice instead of stacking a second one underneath.
 
-The notice mentions the meeting room only when `/link` has actually made one, and says whether the whole server can walk into it or an admin has to let you in. Changing the scope with `/link` rewrites that section, and `/link revoke:True` takes it out again. It deliberately does **not** print the invite URL: that URL is a server invite, and a channel every member can read is not the place to hand one out. `/link` gives it to admins, which is where it belongs.
+The notice describes the lounge and nothing else. It deliberately does **not** print any invite URL: a server invite in a channel every member can read turns every member into a place to get one.
 
 Writing it needs Send Messages, Embed Links, and Read Message History, all three of which were added to the invite integer for this. On a bot invited before that, `/setup` still builds the whole lounge and tells you what to re-invite with.
 
@@ -239,7 +207,7 @@ That number is the sum of the permissions the bot actually uses:
 | Move Members | Move a member into the room the bot just created for them |
 | Connect | Required alongside Move Members to move members into voice |
 | Speak | So the owner and mod overwrites it grants are valid |
-| Create Invite | Mint the permanent invite behind `/link`. Only `/link` uses it; without it every other feature still works |
+| Create Invite | Mint the permanent invites the hosted meeting-link service points at. Without it the lounge itself still works |
 | Send Messages | Post the how-it-works notice in the channel `/setup` creates |
 | Embed Links | Render that notice as an embed rather than a wall of text |
 | Read Message History | Find the notice it already posted, so re-running `/setup` edits it instead of posting a second copy |
@@ -395,14 +363,13 @@ src/
 │   ├── index.ts                # ← Command registry (single source of truth)
 │   ├── SetupCommand.ts         # /setup, including the moderator role
 │   ├── RemoveCommand.ts        # /remove, the confirmed teardown
-│   ├── LinkCommand.ts          # /link, the permanent meeting URL
 │   ├── PingCommand.ts          # /ping
 │   └── HelpCommand.ts          # /help, generated from the registry
 ├── config/
 │   └── loungeNames.ts          # ← Every channel name, in one place
 ├── services/
 │   ├── VoiceLoungeService.ts   # ← Voice-state engine: create, move, transfer, delete, sweep
-│   ├── MeetingLinkService.ts   # The permanent room, its guest role, and its invite
+│   ├── LegacyMeetingRoomCleanup.ts # Removes what the old /link left behind
 │   ├── LoungeGuideService.ts   # The read-only how-it-works channel and its one message
 │   ├── GuildConfigStore.ts     # Per-server JSON persistence
 │   ├── CommandRegistrar.ts     # Registers commands on boot, skipping an unchanged set
@@ -418,7 +385,7 @@ test/
 ├── naming.test.js              # Channel names, room numbering, and the /setup rename
 ├── owner-permissions.test.js   # What a room owner ends up holding on their own room
 ├── manage-permissions.test.js  # Creating a room without Manage Permissions, then adding it
-├── meeting-link.test.js        # /link: scope changes, admitting, and revoking
+├── legacy-meeting-room.test.js # cleanup of the removed permanent meeting room
 ├── lounge-guide.test.js        # The how-it-works channel: one message, kept in step
 ├── help.test.js                # /help rendering itself out of the command registry
 └── remove.test.js              # /remove: confirmation, teardown, and what it refuses to touch

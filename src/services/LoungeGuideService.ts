@@ -39,7 +39,7 @@ const HISTORY_LOOKBACK = 10;
  *
  * There is exactly one message in the channel and this service owns it. Every
  * path that changes what the message should say calls `ensureGuide`, which
- * rewrites the message in place, so `/setup` can be re-run and `/link` can flip
+ * rewrites the message in place, so `/setup` can be re-run and the lounge can change
  * scope without the channel filling up with stale copies.
  *
  * Like the meeting room, it repairs by name: a lounge whose stored IDs were
@@ -256,41 +256,9 @@ export class LoungeGuideService {
         }
       );
 
-    const meeting = this.meetingField(guild, config);
-    if (meeting) embed.addFields(meeting);
-
     embed.setFooter({ text: 'Run /help to see what else the bot does.' });
 
     return embed;
-  }
-
-  /**
-   * The meeting link section, or nothing at all when `/link` has not been run.
-   *
-   * Omitted rather than written in the conditional, because a section saying
-   * what the meeting room would be for is worse than no section: it describes a
-   * channel that is not in the list above it.
-   *
-   * The URL itself is deliberately not here. It is a server invite, and pasting
-   * it somewhere every member reads turns every member into a place to get one.
-   * Admins hand it out from `/link`, which is where it belongs.
-   */
-  private meetingField(guild: Guild, config: GuildConfig): { name: string; value: string } | null {
-    const link = config.link;
-    if (!link) return null;
-
-    const room = guild.channels.cache.get(link.channelId);
-    if (!room) return null;
-
-    return {
-      name: 'The meeting room',
-      value:
-        `<#${link.channelId}> is the one room that is never deleted. It has a fixed link, so it can go in a ` +
-        'recurring calendar invite and still work months later. ' +
-        (link.isPrivate
-          ? 'An admin has to give you access before you can join it.'
-          : 'Anyone in this server can join it.')
-    };
   }
 
   /**

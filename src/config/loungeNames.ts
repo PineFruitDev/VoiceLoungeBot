@@ -31,16 +31,21 @@ export const NEW_PRIVATE_NAME = '➕﹕🔒 New Private';
 export const NEW_PUBLIC_NAME = '➕﹕🔓 New Public';
 
 /**
- * The permanent room `/link` hands out a stable URL for.
+ * The permanent Meeting Room, and the role that gated it.
  *
- * Unlike the numbered rooms below it is never torn down when it empties, which
- * is the whole point: an invite dies with its channel, and a link pasted into a
- * recurring calendar invite has to outlive every meeting held in it.
+ * The feature these belonged to is gone. `/link` gave a server one permanent
+ * room with a fixed invite pointing at it; meetings are now per-link temporary
+ * rooms spawned on demand, so nothing creates either of these any more.
+ *
+ * They stay named here because a name is the only way to find debris. A server
+ * that ran `/link` still has the channel sitting in its lounge category and the
+ * role sitting in its role list, and neither will disappear on its own. These
+ * constants are what `LegacyMeetingRoomCleanup` matches on, and what keeps the
+ * orphan sweep from deleting the room by accident before an admin has asked for
+ * it. Delete them once no install has either object left.
  */
-export const LINK_ROOM_NAME = '🔗﹕Meeting Room';
-
-/** The role a private meeting link grants, and gates its room on. */
-export const LINK_ROLE_NAME = 'Meeting Room Guest';
+export const LEGACY_MEETING_ROOM_NAME = '🔗﹕Meeting Room';
+export const LEGACY_MEETING_ROLE_NAME = 'Meeting Room Guest';
 
 /**
  * Names for the rooms the bot spins up, numbered per type. Edit these and the
@@ -65,7 +70,9 @@ export const LEGACY_GUIDE_CHANNEL_NAMES: string[] = [];
 export const LEGACY_WAITING_ROOM_NAMES = ['Drag Me to Private'];
 export const LEGACY_NEW_PRIVATE_NAMES = ['➕ New Private'];
 export const LEGACY_NEW_PUBLIC_NAMES = ['➕ New Public'];
-export const LEGACY_LINK_ROOM_NAMES: string[] = [];
+
+/** Earlier names for the removed Meeting Room, matched only by the cleanup. */
+export const LEGACY_MEETING_ROOM_NAMES: string[] = [];
 
 /** Placeholder that cannot occur in a channel name, used to split a template. */
 const SLOT = '\u0000';

@@ -20,29 +20,28 @@ export interface TempChannelRecord {
 }
 
 /**
- * The permanent meeting room and its invite, as handed out by `/link`.
+ * What a server that once ran `/link` still has lying around.
  *
- * Everything here is deliberately long lived. The channel is never swept, the
- * invite never expires, and both are only replaced when an admin asks for it,
- * because the URL is expected to be sitting in calendar invites that were sent
- * out weeks ago.
+ * The feature is gone. This record is not config any more, it is a forwarding
+ * address for cleanup: it says which channel and which role to remove, and it
+ * is cleared once they are. Nothing writes it, `LegacyMeetingRoomCleanup` reads
+ * it, and it disappears from a guild's config the first time an admin runs
+ * `/setup` or `/remove` after upgrading.
+ *
+ * Kept rather than dropped because dropping it would strand the objects it
+ * points at. A record nobody reads is tidy; a channel nobody can find is
+ * debris.
  */
-export interface MeetingLinkRecord {
-  /** The permanent voice channel the link lands people in. */
+export interface LegacyMeetingRoomRecord {
+  /** The channel to delete. */
   channelId: string;
-  /** The invite code, so the URL can be rebuilt without a round trip. */
+  /** The invite code. It dies with the channel, so nothing deletes it directly. */
   inviteCode: string;
-  /** Private links gate the room on a role; public ones are open to the server. */
+  /** Whether the room was gated. Only affects whether there is a role to remove. */
   isPrivate: boolean;
-  /** The role a private link grants and gates on. Absent on a public link. */
+  /** The role to delete. Absent when the room was public. */
   roleId?: string;
-  /**
-   * Whether Discord echoed `role_ids` back when the invite was created, meaning
-   * it intends to hand the role out to whoever accepts. Undocumented for people
-   * who are already in the server and reported to silently no-op on some invite
-   * kinds, so it is recorded rather than assumed and `/link admit` is always
-   * offered as the path that works either way.
-   */
+  /** Recorded by the removed feature. Read by nothing; kept so old files parse. */
   grantsRoleOnJoin?: boolean;
 }
 
@@ -70,8 +69,11 @@ export interface GuildConfig {
    */
   categoryCreatedByBot?: boolean;
   modRoleId?: string;
-  /** The stable meeting link for this server, if `/link` has made one. */
-  link?: MeetingLinkRecord;
+  /**
+   * Left over from the removed `/link` feature. Read only by the cleanup, and
+   * cleared once the channel and role it names are gone.
+   */
+  link?: LegacyMeetingRoomRecord;
   /** Active temporary channels, keyed by channel ID. */
   tempChannels: Record<string, TempChannelRecord>;
 }
@@ -210,13 +212,6 @@ export class GuildConfigStore {
     await this.persist();
   }
 
-  public async setLink(guildId: string, link: MeetingLinkRecord): Promise<void> {
-    const config = this.data.guilds[guildId];
-    if (!config) return;
-    config.link = link;
-    await this.persist();
-  }
-
   public async clearLink(guildId: string): Promise<void> {
     const config = this.data.guilds[guildId];
     if (!config?.link) return;
@@ -225,16 +220,22 @@ export class GuildConfigStore {
   }
 
   /**
-   * True if the channel is this guild's permanent meeting room.
+   * True if the channel is this guild's leftover Meeting Room.
    *
    * Deliberately separate from `isHubChannel`, which means "one of the three
-   * trigger channels" and is asked that question elsewhere. The two are only
-   * ever asked together by the orphan sweep, and for opposite reasons: a hub is
-   * skipped because it is not a room, the meeting room because it is a room the
-   * sweep must never take.
+   * trigger channels". The two are only ever asked together by the orphan
+   * sweep, and for opposite reasons: a hub is skipped because it is not a room,
+   * the leftover Meeting Room because it is a room the sweep must not take on
+   * its own. Removing a channel from somebody's server is an admin's call, not
+   * a side effect of a restart.
    */
-  public isLinkChannel(guildId: string, channelId: string): boolean {
+  public isLegacyMeetingRoom(guildId: string, channelId: string): boolean {
     return this.data.guilds[guildId]?.link?.channelId === channelId;
+  }
+
+  /** The leftover record, for the cleanup to act on. */
+  public getLegacyMeetingRoom(guildId: string): LegacyMeetingRoomRecord | undefined {
+    return this.data.guilds[guildId]?.link;
   }
 
   public async addTempChannel(guildId: string, channelId: string, record: TempChannelRecord): Promise<void> {
