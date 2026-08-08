@@ -81,6 +81,22 @@ const BOT_PERMS = [
 ];
 
 /**
+ * What somebody let into a private room gets.
+ *
+ * A private room is hidden by denying View Channel to @everyone, and an
+ * occupant is in @everyone like anyone else, so without a grant of their own
+ * they would be sitting in a room that is not in their channel list. Connect
+ * comes with it because the deny on @everyone covers that too: granting sight
+ * of a room nobody can rejoin after a dropped connection would be a worse place
+ * to leave someone than not hiding it at all.
+ */
+export const GUEST_FLAGS = {
+  ViewChannel: true,
+  Connect: true
+} as const;
+
+
+/**
  * The permissions the bot is invited with, as documented in the README. The
  * invite integer is derived from this list rather than written down twice, so
  * the number the code tells operators to use cannot drift from what it needs.
@@ -227,10 +243,16 @@ export class VoiceLoungeService {
     }
 
     // Joined a temp channel that is not a trigger: record membership for ownership
-    // transfer. Temp-channel joins are otherwise a no-op, which is what keeps the
-    // bot from recursing on its own move of the creator.
+    // transfer, and let them see the room if it is a private one. Temp-channel
+    // joins are otherwise a no-op, which is what keeps the bot from recursing on
+    // its own move of the creator.
     if (newId && this.store.getTempChannel(guildId, newId) && newState.member) {
       await this.store.trackMemberJoin(guildId, newId, newState.member.id, Date.now());
+
+      const joined = newState.guild.channels.cache.get(newId);
+      if (joined?.type === ChannelType.GuildVoice) {
+        await this.admit(joined as VoiceChannel, newState.member);
+      }
     }
 
     // Joining a hub trigger spins up a fresh channel. Waiting room joins do nothing.
@@ -244,6 +266,18 @@ export class VoiceLoungeService {
   /**
    * Create a temporary voice channel for the joining member, grant them control,
    * and move them into it.
+   *
+   * **Overwrites before the move, and that order is load bearing.** The owner's
+   * View and Connect grants ride in the create payload, so they are already on
+   * the channel before anybody is moved into it. The two failures are not
+   * symmetrical: an overwrite written to a room nobody reaches is inert and gets
+   * deleted with the room, while a move into a hidden room with no overwrite
+   * leaves somebody connected to a channel they cannot see, which throws no
+   * error and looks like the bot working. Do not reorder these.
+   *
+   * The Manage Permissions grant below is deliberately the exception and does
+   * not break the rule: it is a convenience for the owner rather than the thing
+   * that gets them into the room, so it can wait until they are safely in.
    */
   private async createTempChannel(state: VoiceState, config: GuildConfig, isPrivate: boolean): Promise<void> {
     const member = state.member;
@@ -491,14 +525,26 @@ export class VoiceLoungeService {
       return;
     }
 
+    // Nobody left in it: the channel goes, and every overwrite on it goes with
+    // it. That is the whole of private-room cleanup, and the reason grants
+    // cannot accumulate past the life of a room.
     if (channel.members.size === 0) {
       await this.deleteChannel(guild, channelId);
       return;
     }
 
     // Owner left but others remain: hand control to the longest-present member.
+    // transferOwnership clears the departing owner's overwrite itself, so this
+    // returns rather than falling through to a revoke that would be deleting an
+    // overwrite that is already gone.
     if (leaverId && record.ownerId === leaverId) {
       await this.transferOwnership(channel as VoiceChannel);
+      return;
+    }
+
+    // A guest left a private room: it goes back out of their channel list.
+    if (leaverId) {
+      await this.revoke(channel as VoiceChannel, leaverId);
     }
   }
 
@@ -548,15 +594,140 @@ export class VoiceLoungeService {
   }
 
   /**
+   * Give somebody sight of the private room they are now in.
+   *
+   * A private room is hidden by denying View Channel to @everyone, and whoever
+   * gets dragged in from the waiting room is in @everyone like anybody else, so
+   * without this they would be sitting in a room that is not in their channel
+   * list. This is the counterpart to that deny and the reason the deny is safe
+   * to write at all.
+   *
+   * Public rooms are left alone: there is nothing to grant when nothing was
+   * taken away, and writing an overwrite per occupant on a busy public room
+   * would be a write per join for no reason.
+   *
+   * There is deliberately no ceiling check here. Discord allows 1000 permission
+   * overwrites per channel, which is the number error 30060 reports, and a voice
+   * channel holds at most 99 people. A room where every occupant needed a grant
+   * would carry about 102 counting @everyone, the owner, the mod role, and the
+   * bot, so the ceiling sits an order of magnitude out of reach and cannot bind
+   * in practice. A guard on it would be a branch that never runs, and the only
+   * thing it could ever do is refuse somebody from a full room that Discord
+   * would have been perfectly happy to admit.
+   *
+   * Returns whether the member can see the room afterwards, which is true when
+   * the call had nothing to do as well as when it worked.
+   */
+  public async admit(channel: VoiceChannel, member: GuildMember): Promise<boolean> {
+    const record = this.store.getTempChannel(channel.guild.id, channel.id);
+    if (!record?.isPrivate) return true;
+
+    // Already covered: the owner by the overwrite the room was built with, a
+    // moderator by the mod role's, an administrator by bypassing overwrites
+    // altogether. Skipping them is not only a saved API call, it also keeps a
+    // room's overwrites describing its guests rather than everyone who walks in.
+    if (channel.permissionsFor(member)?.has(PermissionFlagsBits.ViewChannel)) return true;
+
+    try {
+      // The type is stated rather than left to be inferred, for the reason set
+      // out on buildOverwrites: this bot has no GuildMembers intent, so
+      // discord.js works member from role out of a cache that only holds
+      // whoever the gateway has mentioned. A guest has just come past on a
+      // voice event so the lookup should land, but "should" is doing work there
+      // that one argument removes.
+      await channel.permissionOverwrites.edit(member.id, GUEST_FLAGS, { type: OverwriteType.Member });
+      return true;
+    } catch (error) {
+      await this.reportAdmitFailure(channel, member, error);
+      return false;
+    }
+  }
+
+  /**
+   * Say, in the room itself, that somebody could not be let in.
+   *
+   * This hangs off the failed write rather than off a count, because the write
+   * failing is the reachable version of this problem. A rate limit, the bot's
+   * role being moved down the list mid-meeting, or an override appearing on the
+   * category can all refuse it, and the consequence is the same whatever the
+   * cause: somebody is connected to a room that is not in their channel list and
+   * will not see anything posted in it.
+   *
+   * The room stays hidden either way. Lifting the @everyone deny would let this
+   * one member see the room and show it to the whole server at the same time,
+   * which is the exact thing the room was created to avoid.
+   *
+   * The notice goes to the room's own text chat because that is where the people
+   * who can act on it already are. It cannot reach the member it is about, who
+   * by definition cannot see the channel, and saying so is the point: somebody
+   * in the room has to notice and tell them.
+   */
+  private async reportAdmitFailure(channel: VoiceChannel, member: GuildMember, error: unknown): Promise<void> {
+    this.logger.warn(
+      `admit - Could not give ${member.user.tag} access to private room ${channel.id}. They are connected ` +
+      'but the room is not in their channel list.',
+      error
+    );
+
+    try {
+      await channel.send(
+        `⚠️ Could not give <@${member.id}> access to this room. They are connected, but it is not in their ` +
+        'channel list and they will not see anything posted here. Moving them out and back in will try again.'
+      );
+    } catch (sendError) {
+      this.logger.warn(`reportAdmitFailure - Could not post the notice in ${channel.id}:`, sendError);
+    }
+  }
+
+  /**
+   * Take back what `admit` handed out, so a private room drops out of the
+   * channel list of somebody who has left it.
+   *
+   * Only guest overwrites go. An overwrite carrying Manage Channels belongs to
+   * the owner, or to somebody the owner has deliberately put in charge, and the
+   * owner's is transferOwnership's to remove: that is the one place which
+   * decides who is running the room, and two places deleting the same overwrite
+   * would mean one of them always failing.
+   */
+  public async revoke(channel: VoiceChannel, userId: string): Promise<void> {
+    const record = this.store.getTempChannel(channel.guild.id, channel.id);
+    if (!record?.isPrivate) return;
+
+    const overwrite = channel.permissionOverwrites.cache.get(userId);
+    if (!overwrite || overwrite.type !== OverwriteType.Member) return;
+    if (overwrite.allow.has(PermissionFlagsBits.ManageChannels)) return;
+
+    try {
+      await channel.permissionOverwrites.delete(userId, 'Left the private room');
+    } catch (error) {
+      this.logger.warn(`revoke - Could not remove access for ${userId} on ${channel.id}:`, error);
+    }
+  }
+
+  /**
    * Build the permission overwrites for a temp channel.
-   * - @everyone can view and join public channels; view but not join private ones.
+   * - @everyone can view and join public channels. On a private one they are
+   *   denied both, which is what keeps the room out of the channel list of
+   *   everybody who is not in it.
    * - The owner gets control of the room plus the ability to drag members in.
    *   Manage Permissions is not in here and cannot be: see BASE_CONTROL_FLAGS.
    *   grantManagePermissions adds it once the channel exists.
-   * - The mod role (if set) gets the same control over every temp channel.
-   * - The bot keeps Connect and Move Members on the room regardless, so the
-   *   @everyone Connect deny on a private room does not lock it out of the room
-   *   it is about to move the owner into.
+   * - The mod role (if set) gets the same control over every temp channel, View
+   *   Channel included, so staff can still see into private rooms.
+   * - The bot keeps View, Connect, and Move Members on the room regardless, so
+   *   the @everyone deny on a private room does not lock it out of the room it
+   *   is about to move the owner into, or hide that room from the orphan sweep.
+   *
+   * Connect is denied alongside View rather than instead of it. The two answer
+   * different questions: View decides whether the room is in your list, Connect
+   * decides whether you can enter. Keeping the Connect deny means a member who
+   * gains sight of the room some other way, through a role an admin adds later
+   * or a stale overwrite, still cannot walk into it.
+   *
+   * This is the only place a View deny is ever written, and it only ever runs
+   * against a channel this method's caller has just created, so it cannot reach
+   * a hub channel. `/setup` re-asserts the hubs' own overwrites on every run as
+   * the backstop for a hub hidden by some other means.
    */
   private buildOverwrites(
     guild: Guild,
@@ -575,8 +746,8 @@ export class VoiceLoungeService {
       {
         id: guild.roles.everyone.id,
         type: OverwriteType.Role,
-        allow: [PermissionFlagsBits.ViewChannel],
-        deny: isPrivate ? [PermissionFlagsBits.Connect] : []
+        allow: isPrivate ? [] : [PermissionFlagsBits.ViewChannel],
+        deny: isPrivate ? [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect] : []
       },
       {
         id: ownerId,
@@ -747,9 +918,15 @@ export class VoiceLoungeService {
       ) {
         ownerId = overwrite.id;
       }
+      // Either deny marks a private room. A room built by this version denies
+      // both View Channel and Connect, but one built before private rooms were
+      // hidden denies only Connect, and it can still be sitting occupied in the
+      // category across the upgrade that introduced the View deny. Reading only
+      // the new marker would re-adopt those as public and hand the next owner a
+      // public room's permissions.
       if (
         overwrite.id === channel.guild.roles.everyone.id &&
-        overwrite.deny.has(PermissionFlagsBits.Connect)
+        (overwrite.deny.has(PermissionFlagsBits.ViewChannel) || overwrite.deny.has(PermissionFlagsBits.Connect))
       ) {
         isPrivate = true;
       }

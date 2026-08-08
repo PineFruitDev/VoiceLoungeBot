@@ -126,21 +126,58 @@ export class SetupCommand extends Command {
       guild, existing?.newPrivateId, NEW_PRIVATE_NAME, LEGACY_NEW_PRIVATE_NAMES, category.channel.id
     );
 
-    // Grant @everyone Move Members on the waiting room. Discord requires Move
-    // Members in both the source and destination channels to drag a member.
-    // Channel owners already hold it on their own temp channel (the destination);
-    // this covers the waiting room (the source) so an owner can drag someone into
-    // their channel. The grant is naturally scoped: a member can only deposit a
-    // waiting-room occupant into a channel where they also hold Move Members, which
-    // is only their own temp channel. Applied every run so it self-repairs.
-    try {
-      await waitingRoom.channel.permissionOverwrites.edit(guild.roles.everyone, {
-        ViewChannel: true,
-        Connect: true,
-        MoveMembers: true
-      });
-    } catch (error) {
-      this.logger.warn('execute - Failed to set waiting room permissions:', error);
+    // Re-assert what @everyone gets on all three hub channels, every run, so it
+    // self-repairs.
+    //
+    // The View Channel half is a safety catch on private rooms rather than
+    // tidying. A private room is hidden by denying @everyone View Channel, and a
+    // hub carrying that deny would be a hub nobody can see, which takes the
+    // whole feature out of reach of the server: you cannot join a trigger
+    // channel that is not in your list, so you cannot make a room, so you cannot
+    // get to anything. The bot only ever writes that deny to a room it has just
+    // created, so what this repairs is a hub hidden some other way, an admin's
+    // edit or a permission sync from the category, and the case the name
+    // matching above makes reachable: a hidden temp room renamed to a hub's name
+    // and adopted as one.
+    //
+    // Move Members on the waiting room is what lets an owner drag somebody out
+    // of it. Discord wants Move Members in both the source and the destination;
+    // owners already hold it on their own room, so this covers the source. The
+    // grant is naturally scoped: a member can only deposit a waiting-room
+    // occupant into a channel where they also hold Move Members, which is only
+    // their own temp channel.
+    const hubPermissions = [
+      { channel: waitingRoom.channel, flags: { ViewChannel: true, Connect: true, MoveMembers: true } },
+      { channel: newPublic.channel, flags: { ViewChannel: true, Connect: true } },
+      { channel: newPrivate.channel, flags: { ViewChannel: true, Connect: true } }
+    ];
+
+    for (const { channel, flags } of hubPermissions) {
+      // The bot first, and the order is the point. The bot is a member of
+      // @everyone like anyone else, so an admin who hides a hub from @everyone
+      // hides it from the bot too, and a bot that cannot see the channel cannot
+      // be the thing that puts it back. Writing this overwrite while the hub is
+      // still visible is what keeps the repair above from depending on the
+      // damage not having happened yet.
+      //
+      // Move Members belongs here rather than only on @everyone: it is the
+      // permission the bot needs on the *source* channel to move a member out
+      // of a trigger and into the room it has just built for them.
+      try {
+        await channel.permissionOverwrites.edit(guild.members.me!.id, {
+          ViewChannel: true,
+          Connect: true,
+          MoveMembers: true
+        });
+      } catch (error) {
+        this.logger.warn(`execute - Failed to secure the bot's access to hub channel "${channel.name}":`, error);
+      }
+
+      try {
+        await channel.permissionOverwrites.edit(guild.roles.everyone, flags);
+      } catch (error) {
+        this.logger.warn(`execute - Failed to set permissions on hub channel "${channel.name}":`, error);
+      }
     }
 
     await store.setLounge(guild.id, {
@@ -172,7 +209,7 @@ export class SetupCommand extends Command {
       `📂 **Category:** ${category.channel.name}\n` +
       `🚪 **Waiting room:** <#${waitingRoom.channel.id}>\n` +
       `🔓 **New Public:** <#${newPublic.channel.id}> (join to spawn a public channel you control)\n` +
-      `🔒 **New Private:** <#${newPrivate.channel.id}> (join to spawn a private channel only you can enter)` +
+      `🔒 **New Private:** <#${newPrivate.channel.id}> (join to spawn a hidden channel only you can see or enter)` +
       this.guideLine(guide) +
       modLine +
       renameLine +

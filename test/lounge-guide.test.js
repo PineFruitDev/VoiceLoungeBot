@@ -119,7 +119,7 @@ test('the guide covers the four things a new member needs to know', async () => 
 
   const text = guideText(ctx.guild).toLowerCase();
   assert.match(text, /moves you into it/, 'it should say joining a hub gets you a room');
-  assert.match(text, /nobody else can get in/, 'it should say what private means');
+  assert.match(text, /hidden: nobody else can see it/, 'it should say what private means');
   assert.match(text, /the room is deleted/, 'it should say rooms are cleaned up');
   assert.match(text, /rename it/, 'it should say the room is yours to change');
 });
