@@ -35,13 +35,13 @@ interface Plan {
   hubs: Target[];
   rooms: Target[];
   /**
-   * The permanent meeting room behind `/link`, if there is one. It goes with
+   * The leftover meeting room from the removed `/link`, if there is one. It goes with
    * the rest of the lounge: leaving it would keep a live invite pointing into a
    * server that no longer has a lounge, and would sit in the category and block
    * it from being deleted.
    */
   link: Target | null;
-  /** The guest role a private meeting link gated on, deleted with the room. */
+  /** The guest role that room was gated on, deleted with it. */
   linkRoleId?: string;
   /**
    * The read-only how-it-works channel. It goes with the lounge for the same
@@ -161,7 +161,7 @@ export class RemoveCommand extends Command {
       voice('New Private', config.newPrivateId)
     ];
     const rooms = Object.keys(config.tempChannels).map(id => voice('Room', id));
-    const link = config.link ? voice('Meeting room', config.link.channelId) : null;
+    const link = config.link ? voice('Old meeting room', config.link.channelId) : null;
     const guide = config.guideChannelId
       ? resolve('How it works', config.guideChannelId, ChannelType.GuildText)
       : null;
@@ -215,8 +215,8 @@ export class RemoveCommand extends Command {
     if (plan.link) {
       lines.push(
         plan.link.channel
-          ? `🔗 The permanent meeting room <#${plan.link.id}>, and the \`/link\` URL that points at it`
-          : '🔗 The `/link` meeting room (already gone) and its saved URL'
+          ? `🔗 The old permanent meeting room <#${plan.link.id}>, left over from a removed feature`
+          : '🔗 The saved record of the old meeting room (the channel is already gone)'
       );
       if (plan.linkRoleId) {
         lines.push(`🎫 The <@&${plan.linkRoleId}> guest role`);

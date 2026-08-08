@@ -46,18 +46,6 @@ test('help documents every option of every command, straight off the builder', a
   }
 });
 
-test('help documents /link down to its scope choices', async () => {
-  const embed = await runHelp();
-  const link = embed.fields.find(field => field.name === '/link');
-
-  assert.ok(link, '/help should have a section for /link');
-  assert.match(link.value, /`scope`/, 'it should name the scope option');
-  assert.match(link.value, /public, private/, 'and list what scope accepts');
-  assert.match(link.value, /`admit`/, 'it should name admit');
-  assert.match(link.value, /`revoke`/, 'it should name revoke');
-  assert.match(link.value, /\[scope:public\|private\]/, 'and show how the command is typed');
-});
-
 test('every help field fits inside what Discord will accept', async () => {
   const embed = await runHelp();
   for (const field of embed.fields) {

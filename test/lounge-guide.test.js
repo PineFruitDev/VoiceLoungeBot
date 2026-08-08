@@ -17,14 +17,12 @@ import { GuildConfigStore } from '../dist/services/GuildConfigStore.js';
 import { LoungeGuideService } from '../dist/services/LoungeGuideService.js';
 import { SetupCommand } from '../dist/commands/SetupCommand.js';
 import { RemoveCommand } from '../dist/commands/RemoveCommand.js';
-import { LinkCommand } from '../dist/commands/LinkCommand.js';
 import { GUIDE_CHANNEL_NAME } from '../dist/config/loungeNames.js';
 import { REQUIRED_PERMISSION_INTEGER } from '../dist/services/VoiceLoungeService.js';
 import {
   createClient,
   buildLoungeChannels,
   createInteraction,
-  createInviteApi,
   captureLogs,
   BOT_WITHOUT_SEND_MESSAGES,
   EVERYONE_ID
@@ -64,10 +62,6 @@ const runSetup = (guild, options = {}) => {
   return new SetupCommand().execute(interaction).then(() => interaction);
 };
 
-const runLink = (guild, options, inviteApi) => {
-  const interaction = createInteraction(guild, options);
-  return new LinkCommand(inviteApi).execute(interaction).then(() => interaction);
-};
 
 /** The guide channel in a guild, whatever the store thinks. */
 const guideChannel = guild =>
@@ -183,60 +177,16 @@ test('a message deleted by hand is reposted', async () => {
   assert.equal(guideMessages(ctx.guild).length, 1, 'setup should put the notice back');
 });
 
-test('the guide says nothing about a meeting link that does not exist', async () => {
+test('the guide never mentions a meeting room', async () => {
+  // The permanent Meeting Room is gone, and the guide is read by every member,
+  // so a leftover section would be describing a channel that is not in the list
+  // above it. This is the regression guard for that.
   const ctx = buildGuild();
   await runSetup(ctx.guild);
+  const text = JSON.stringify(guideEmbed(ctx.guild));
 
-  const text = guideText(ctx.guild).toLowerCase();
-  assert.ok(!text.includes('meeting'), 'no link means no meeting section at all');
-  assert.ok(!text.includes('calendar'), 'and nothing about calendar invites either');
-});
-
-test('creating a public link adds the meeting section, and revoking removes it', async () => {
-  const ctx = buildGuild();
-  const api = createInviteApi();
-  await runSetup(ctx.guild);
-  const messageId = guideMessages(ctx.guild)[0].id;
-
-  await runLink(ctx.guild, { scope: 'public' }, api);
-
-  let text = guideText(ctx.guild);
-  assert.match(text, /meeting room/i, 'the section should appear');
-  assert.match(text, /Anyone in this server can join it/, 'and say the server can walk in');
-  assert.equal(guideMessages(ctx.guild).length, 1, 'still one message');
-  assert.equal(guideMessages(ctx.guild)[0].id, messageId, 'and still the same one');
-
-  await runLink(ctx.guild, { revoke: true }, api);
-
-  text = guideText(ctx.guild);
-  assert.ok(!/meeting room/i.test(text), 'revoking should take the section back out');
-  assert.equal(guideMessages(ctx.guild).length, 1, 'without posting anything new');
-});
-
-test('flipping the link scope rewrites what the guide says about access', async () => {
-  const ctx = buildGuild();
-  const api = createInviteApi();
-  await runSetup(ctx.guild);
-  await runLink(ctx.guild, { scope: 'public' }, api);
-
-  assert.match(guideText(ctx.guild), /Anyone in this server can join it/);
-
-  await runLink(ctx.guild, { scope: 'private' }, api);
-
-  const text = guideText(ctx.guild);
-  assert.match(text, /An admin has to give you access/, 'a private room needs admitting');
-  assert.ok(!/Anyone in this server can join it/.test(text), 'and the public line should be gone');
-  assert.equal(guideMessages(ctx.guild).length, 1, 'all in the one message');
-});
-
-test('the guide never prints the invite URL itself', async () => {
-  const ctx = buildGuild();
-  const api = createInviteApi();
-  await runSetup(ctx.guild);
-  await runLink(ctx.guild, { scope: 'public' }, api);
-
-  const embed = JSON.stringify(guideEmbed(ctx.guild));
-  assert.ok(!embed.includes('discord.gg'), 'a server invite does not belong on a member-facing notice board');
+  assert.ok(!text.includes('meeting'), 'the guide should say nothing about meetings');
+  assert.ok(!text.includes('Meeting Room'), 'and nothing about a meeting room');
 });
 
 test('a bot that cannot post says so and still builds the lounge', async () => {

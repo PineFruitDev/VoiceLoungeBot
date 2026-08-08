@@ -5,6 +5,7 @@ import { Logger } from './services/Logger.js';
 import { Environment } from './services/Environment.js';
 import { GuildConfigStore } from './services/GuildConfigStore.js';
 import { VoiceLoungeService } from './services/VoiceLoungeService.js';
+import { LegacyMeetingRoomCleanup } from './services/LegacyMeetingRoomCleanup.js';
 import { CommandRegistrar } from './services/CommandRegistrar.js';
 import { ALL_COMMANDS } from './commands/index.js';
 
@@ -35,6 +36,19 @@ async function main() {
     // first because it is local and instant, while registration is a round trip.
     bot.getClient().once(Events.ClientReady, async () => {
       await voiceService.sweepOrphans();
+
+      // Say which servers still carry debris from the removed `/link` feature,
+      // and do nothing about it. Looking is safe; deleting a channel in
+      // somebody's Discord on a restart is not, so that stays an admin's call
+      // via `/setup`. A server with nothing left over prints nothing.
+      const cleanup = new LegacyMeetingRoomCleanup();
+      for (const { guildId } of store.getAllGuilds()) {
+        const guild = bot.getClient().guilds.cache.get(guildId);
+        if (!guild) continue;
+
+        const notice = cleanup.report(guild, store);
+        if (notice) logger.warn(notice);
+      }
 
       if (!config.registerOnBoot) {
         logger.info('Command registration on boot is off (REGISTER_ON_BOOT), run `npm run register` to do it by hand');
